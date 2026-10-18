@@ -1,0 +1,19 @@
+# Compiled binaries
+dep-tracker
+dependency_risk_tracker
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test & scan output artifacts
+sbom.json
+sample-package.json
+test-package.json
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+*.swp
