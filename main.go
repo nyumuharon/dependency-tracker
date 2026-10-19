@@ -15,21 +15,23 @@ type Package struct {
 
 func main() {
 	if len(os.Args) < 3 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "Usage: dep-tracker scan <manifest-file>")
-		fmt.Fprintln(os.Stderr, "  Example: dep-tracker scan package.json")
+		fmt.Fprintln(os.Stderr, "Usage: dep-tracker scan <path>")
+		fmt.Fprintln(os.Stderr, "  Examples:")
+		fmt.Fprintln(os.Stderr, "    dep-tracker scan .                  # Scan entire project/repo recursively")
+		fmt.Fprintln(os.Stderr, "    dep-tracker scan package.json       # Scan specific manifest")
+		fmt.Fprintln(os.Stderr, "    dep-tracker scan package-lock.json  # Scan specific lockfile")
 		os.Exit(1)
 	}
 
-	manifestPath := os.Args[2]
+	targetPath := os.Args[2]
 
-	// 1. Parse manifest
-	fmt.Printf("Scanning %s...\n", manifestPath)
-	packages, err := ParseManifest(manifestPath)
+	// 1. Parse manifest or project directory
+	packages, err := ParsePath(targetPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing manifest: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Found %d dependencies\n\n", len(packages))
+	fmt.Printf("Total unique dependencies to analyze: %d\n\n", len(packages))
 
 	// 2. Concurrently check staleness for all packages in parallel
 	stalenessMap := make(map[string]StalenessResult)
