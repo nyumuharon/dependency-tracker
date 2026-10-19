@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,6 +34,8 @@ func CheckStaleness(pkg Package) (StalenessResult, error) {
 		return checkPackagistStaleness(pkg.Name)
 	case "RubyGems":
 		return checkRubyGemsStaleness(pkg.Name)
+	case "ConanCenter":
+		return checkConanStaleness(pkg.Name)
 	default:
 		return StalenessResult{}, fmt.Errorf("unsupported ecosystem: %s", pkg.Ecosystem)
 	}
@@ -375,4 +378,47 @@ func checkRubyGemsStaleness(name string) (StalenessResult, error) {
 		LastUpdated:   t,
 		IsStale:       isStale(t),
 	}, nil
+}
+
+// ── C / C++ (ConanCenter) ─────────────────────────────────────────────────────
+func checkConanStaleness(name string) (StalenessResult, error) {
+	// Query official ConanCenter recipe config
+	configURL := fmt.Sprintf("https://raw.githubusercontent.com/conan-io/conan-center-index/master/recipes/%s/config.yml", url.PathEscape(name))
+	resp, err := httpClient.Get(configURL)
+	if err != nil {
+		return StalenessResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return StalenessResult{}, nil // Recipe not indexed in conan-center-index
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	inVersions := false
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r\n")
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "versions:" {
+			inVersions = true
+			continue
+		}
+
+		if inVersions {
+			// Find the first version entry under versions: (e.g., `  "3.1.2":` or `  1.2.3:`)
+			if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && strings.HasSuffix(trimmed, ":") {
+				v := strings.TrimSuffix(trimmed, ":")
+				v = strings.Trim(v, `"'`)
+				if v != "" {
+					return StalenessResult{LatestVersion: v}, nil
+				}
+			} else if !strings.HasPrefix(line, " ") && trimmed != "" {
+				// Reached another top-level key
+				break
+			}
+		}
+	}
+
+	return StalenessResult{}, nil
 }

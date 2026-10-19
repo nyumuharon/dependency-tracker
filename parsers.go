@@ -25,6 +25,7 @@ var skipDirs = map[string]bool{
 	"build":        true,
 	".idea":        true,
 	".vscode":      true,
+	"testdata":     true,
 }
 
 // IsManifestFile returns true if fileName is a recognized dependency manifest or lockfile.
@@ -47,7 +48,10 @@ func IsManifestFile(fileName string) bool {
 		strings.HasSuffix(fileName, "pom.xml"),
 		strings.HasSuffix(fileName, "packages.lock.json"),
 		strings.HasSuffix(fileName, "packages.config"),
-		strings.HasSuffix(fileName, ".csproj"):
+		strings.HasSuffix(fileName, ".csproj"),
+		strings.HasSuffix(fileName, "conan.lock"),
+		strings.HasSuffix(fileName, "conanfile.txt"),
+		strings.HasSuffix(fileName, "vcpkg.json"):
 		return true
 	default:
 		return false
@@ -61,6 +65,8 @@ func filterDirManifests(paths []string) []string {
 	var goLocks, goManifests []string
 	var rustLocks, rustManifests []string
 	var phpLocks, phpManifests []string
+	var conanLocks, conanManifests []string
+	var vcpkgManifests []string
 	var otherManifests []string
 
 	for _, p := range paths {
@@ -93,6 +99,14 @@ func filterDirManifests(paths []string) []string {
 			phpLocks = append(phpLocks, p)
 		case strings.HasSuffix(base, "composer.json"):
 			phpManifests = append(phpManifests, p)
+
+		case strings.HasSuffix(base, "conan.lock"):
+			conanLocks = append(conanLocks, p)
+		case strings.HasSuffix(base, "conanfile.txt"):
+			conanManifests = append(conanManifests, p)
+
+		case strings.HasSuffix(base, "vcpkg.json"):
+			vcpkgManifests = append(vcpkgManifests, p)
 
 		default:
 			otherManifests = append(otherManifests, p)
@@ -132,6 +146,13 @@ func filterDirManifests(paths []string) []string {
 		selected = append(selected, phpManifests...)
 	}
 
+	if len(conanLocks) > 0 {
+		selected = append(selected, conanLocks...)
+	} else {
+		selected = append(selected, conanManifests...)
+	}
+
+	selected = append(selected, vcpkgManifests...)
 	selected = append(selected, otherManifests...)
 	return selected
 }
@@ -207,6 +228,9 @@ func ParsePath(targetPath string) ([]Package, error) {
 			continue
 		}
 		for _, p := range pkgs {
+			if p.ManifestPath == "" {
+				p.ManifestPath = file
+			}
 			key := p.Name + "@" + p.Version + "@" + p.Ecosystem
 			if !seen[key] {
 				seen[key] = true
@@ -270,6 +294,14 @@ func ParseManifest(filePath string) ([]Package, error) {
 	case strings.HasSuffix(filePath, ".csproj"),
 		strings.HasSuffix(filePath, "packages.config"):
 		return parseNuGet(filePath)
+
+	// C / C++ (Conan & vcpkg)
+	case strings.HasSuffix(filePath, "conan.lock"):
+		return parseConanLock(filePath)
+	case strings.HasSuffix(filePath, "conanfile.txt"):
+		return parseConanFile(filePath)
+	case strings.HasSuffix(filePath, "vcpkg.json"):
+		return parseVcpkg(filePath)
 
 	default:
 		return nil, fmt.Errorf("unsupported manifest: %s", filePath)
@@ -1095,6 +1127,250 @@ func parseNuGetLock(filePath string) ([]Package, error) {
 					})
 				}
 			}
+		}
+	}
+
+	return pkgs, nil
+}
+
+// ── C / C++ (Conan & vcpkg) ──────────────────────────────────────────────────
+
+// parseConanFile parses dependencies from conanfile.txt.
+func parseConanFile(filePath string) ([]Package, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var pkgs []Package
+	seen := make(map[string]bool)
+	scanner := bufio.NewScanner(file)
+	inRequires := false
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+
+		// Check for section headers [section]
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inRequires = strings.EqualFold(line, "[requires]")
+			continue
+		}
+
+		if !inRequires {
+			continue
+		}
+
+		// Remove trailing inline comments if preceded by whitespace
+		if idx := strings.Index(line, " #"); idx != -1 {
+			line = strings.TrimSpace(line[:idx])
+		} else if idx := strings.Index(line, " ;"); idx != -1 {
+			line = strings.TrimSpace(line[:idx])
+		}
+
+		// Conan requirement line: e.g. "openssl/3.1.4", "openssl/3.1.4@user/channel", "openssl/3.1.4#rev"
+		line = strings.Split(line, "#")[0]
+		line = strings.Split(line, "@")[0]
+		line = strings.TrimSpace(line)
+
+		parts := strings.Split(line, "/")
+		if len(parts) == 2 {
+			name := strings.TrimSpace(parts[0])
+			version := strings.TrimSpace(parts[1])
+			if name != "" && version != "" {
+				key := name + "@" + version
+				if !seen[key] {
+					seen[key] = true
+					pkgs = append(pkgs, Package{
+						Name:         name,
+						Version:      version,
+						Ecosystem:    "ConanCenter",
+						ManifestPath: filePath,
+					})
+				}
+			}
+		}
+	}
+
+	return pkgs, scanner.Err()
+}
+
+// parseConanLock parses dependencies from conan.lock (supports Conan 1.x and 2.x formats).
+func parseConanLock(filePath string) ([]Package, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	type conanNode struct {
+		Ref string `json:"ref"`
+	}
+
+	var root struct {
+		GraphLock struct {
+			Nodes json.RawMessage `json:"nodes"`
+		} `json:"graph_lock"`
+		Nodes json.RawMessage `json:"nodes"`
+	}
+
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("invalid conan.lock: %w", err)
+	}
+
+	nodesRaw := root.GraphLock.Nodes
+	if len(nodesRaw) == 0 {
+		nodesRaw = root.Nodes
+	}
+
+	if len(nodesRaw) == 0 {
+		return nil, nil
+	}
+
+	var nodesList []conanNode
+
+	// Try unmarshaling as map[string]conanNode (Conan 2.0 / standard format)
+	var nodesMap map[string]conanNode
+	if err := json.Unmarshal(nodesRaw, &nodesMap); err == nil {
+		for key, node := range nodesMap {
+			// In Conan, node "0" is always the root consumer project
+			if key == "0" {
+				continue
+			}
+			nodesList = append(nodesList, node)
+		}
+	} else {
+		// Try unmarshaling as slice []conanNode
+		var slice []conanNode
+		if err := json.Unmarshal(nodesRaw, &slice); err == nil {
+			if len(slice) > 1 {
+				nodesList = slice[1:] // Skip root consumer node 0
+			} else {
+				nodesList = slice
+			}
+		}
+	}
+
+	var pkgs []Package
+	seen := make(map[string]bool)
+
+	for _, n := range nodesList {
+		ref := strings.TrimSpace(n.Ref)
+		if ref == "" || ref == "null" {
+			continue
+		}
+
+		// ref format: "openssl/3.1.4#rev..." or "openssl/3.1.4@user/channel#rev"
+		ref = strings.Split(ref, "#")[0]
+		ref = strings.Split(ref, "@")[0]
+		ref = strings.TrimSpace(ref)
+
+		parts := strings.Split(ref, "/")
+		if len(parts) == 2 {
+			name := strings.TrimSpace(parts[0])
+			version := strings.TrimSpace(parts[1])
+			if name != "" && version != "" {
+				key := name + "@" + version
+				if !seen[key] {
+					seen[key] = true
+					pkgs = append(pkgs, Package{
+						Name:         name,
+						Version:      version,
+						Ecosystem:    "ConanCenter",
+						ManifestPath: filePath,
+					})
+				}
+			}
+		}
+	}
+
+	return pkgs, nil
+}
+
+// parseVcpkg parses dependencies from Microsoft vcpkg (vcpkg.json).
+func parseVcpkg(filePath string) ([]Package, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var manifest struct {
+		Dependencies []json.RawMessage `json:"dependencies"`
+		Overrides    []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"overrides"`
+	}
+
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("invalid vcpkg.json: %w", err)
+	}
+
+	overrides := make(map[string]string)
+	for _, o := range manifest.Overrides {
+		if o.Name != "" && o.Version != "" {
+			overrides[o.Name] = o.Version
+		}
+	}
+
+	var pkgs []Package
+	seen := make(map[string]bool)
+
+	for _, depRaw := range manifest.Dependencies {
+		var name, version string
+
+		// Try parsing as simple string "zlib"
+		var simple string
+		if err := json.Unmarshal(depRaw, &simple); err == nil && simple != "" {
+			name = simple
+		} else {
+			// Try parsing as dependency object
+			var depObj struct {
+				Name          string `json:"name"`
+				Version       string `json:"version"`
+				VersionGE     string `json:"version>="`
+				VersionString string `json:"version-string"`
+				VersionDate   string `json:"version-date"`
+			}
+			if err := json.Unmarshal(depRaw, &depObj); err == nil {
+				name = depObj.Name
+				switch {
+				case depObj.Version != "":
+					version = depObj.Version
+				case depObj.VersionGE != "":
+					version = depObj.VersionGE
+				case depObj.VersionString != "":
+					version = depObj.VersionString
+				case depObj.VersionDate != "":
+					version = depObj.VersionDate
+				}
+			}
+		}
+
+		if name == "" {
+			continue
+		}
+
+		// Overrides take precedence
+		if ov, ok := overrides[name]; ok {
+			version = ov
+		}
+
+		if version == "" {
+			version = "latest"
+		}
+
+		key := name + "@" + version
+		if !seen[key] {
+			seen[key] = true
+			pkgs = append(pkgs, Package{
+				Name:         name,
+				Version:      version,
+				Ecosystem:    "ConanCenter",
+				ManifestPath: filePath,
+			})
 		}
 	}
 

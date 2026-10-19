@@ -8,9 +8,10 @@ import (
 )
 
 type Package struct {
-	Name      string
-	Version   string
-	Ecosystem string
+	Name         string
+	Version      string
+	Ecosystem    string
+	ManifestPath string
 }
 
 func main() {
@@ -86,7 +87,29 @@ func main() {
 		}
 	}
 
-	// 4. Query NVD only as a fallback for CVEs that lacked a CVSS vector in OSV
+	// 4. Query CISA KEV catalog for known actively exploited vulnerabilities
+	var kevCatalog map[string]KEVEntry
+	if len(allCVEIDs) > 0 {
+		var err error
+		kevCatalog, err = FetchKEVCatalog()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: CISA KEV catalog fetch failed: %v\n", err)
+		}
+	}
+
+	// Match CISA KEV status to discovered vulnerabilities
+	for pkgName, vulns := range pkgVulns {
+		for i, v := range vulns {
+			if entry, ok := kevCatalog[v.CVEID]; ok {
+				pkgVulns[pkgName][i].IsKEV = true
+				if strings.EqualFold(entry.KnownRansomwareCampaignUse, "Known") {
+					pkgVulns[pkgName][i].KEVRansomware = true
+				}
+			}
+		}
+	}
+
+	// 5. Query NVD only as a fallback for CVEs that lacked a CVSS vector in OSV
 	nvdScores := make(map[string]float64)
 	for _, vulns := range pkgVulns {
 		for _, v := range vulns {
@@ -109,7 +132,7 @@ func main() {
 		}
 	}
 
-	// 5. Batch EPSS query
+	// 6. Batch EPSS query
 	epssScores, err := QueryEPSS(allCVEIDs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: EPSS query failed: %v\n", err)
@@ -127,13 +150,14 @@ func main() {
 	// Wait for concurrent staleness checks to complete
 	stalenessWg.Wait()
 
-	// 6. Build scan results
+	// 7. Build scan results
 	var results []ScanResult
 	for _, pkg := range packages {
 		vulns := pkgVulns[pkg.Name]
 
-		// Find highest CVSS and EPSS across all vulns for this package
+		// Find highest CVSS and EPSS across all vulns for this package, and check for active KEV
 		var maxCVSS, maxEPSS float64
+		hasKEV := false
 		for _, v := range vulns {
 			if v.CVSS > maxCVSS {
 				maxCVSS = v.CVSS
@@ -141,9 +165,12 @@ func main() {
 			if v.EPSS > maxEPSS {
 				maxEPSS = v.EPSS
 			}
+			if v.IsKEV {
+				hasKEV = true
+			}
 		}
 
-		tier := Score(maxCVSS, maxEPSS, len(vulns) > 0)
+		tier := Score(maxCVSS, maxEPSS, len(vulns) > 0, hasKEV)
 
 		results = append(results, ScanResult{
 			Pkg:             pkg,
@@ -153,17 +180,23 @@ func main() {
 		})
 	}
 
-	// 7. Print report
+	// 8. Print report
 	PrintReport(results)
 
-	// 8. Generate SBOM
+	// 9. Generate SBOM and SARIF reports
 	if err := GenerateSBOM(results, "sbom.json"); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: SBOM generation failed: %v\n", err)
 	} else {
 		fmt.Println("\nSBOM saved to sbom.json")
 	}
 
-	// 9. Exit with code 1 if any CRITICAL-EXPLOITABLE found
+	if err := GenerateSARIF(results, "results.sarif"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: SARIF generation failed: %v\n", err)
+	} else {
+		fmt.Println("SARIF report saved to results.sarif")
+	}
+
+	// 10. Exit with code 1 if any CRITICAL-EXPLOITABLE found
 	for _, r := range results {
 		if r.PriorityTier == "CRITICAL-EXPLOITABLE" {
 			os.Exit(1)

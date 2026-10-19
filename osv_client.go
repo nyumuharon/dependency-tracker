@@ -19,11 +19,14 @@ const (
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
 type Vulnerability struct {
-	CVEID   string
-	Summary string
-	CVSS    float64
-	ID      string
-	EPSS    float64
+	CVEID         string
+	Summary       string
+	CVSS          float64
+	ID            string
+	EPSS          float64
+	FixedVersion  string
+	IsKEV         bool
+	KEVRansomware bool
 }
 
 // osvQuery is what we POST to the OSV API
@@ -46,6 +49,14 @@ type osvResponse struct {
 			Type  string `json:"type"`
 			Score string `json:"score"`
 		} `json:"severity"`
+		Affected []struct {
+			Ranges []struct {
+				Type   string `json:"type"`
+				Events []struct {
+					Fixed string `json:"fixed"`
+				} `json:"events"`
+			} `json:"ranges"`
+		} `json:"affected"`
 	} `json:"vulns"`
 }
 
@@ -70,9 +81,51 @@ func parseVulns(res osvResponse) []Vulnerability {
 			summary = strings.TrimSpace(firstLine)
 		}
 
+		var fixedVersion string
+		// Pass 1: Prioritize SEMVER or ECOSYSTEM ranges
+		for _, aff := range v.Affected {
+			for _, r := range aff.Ranges {
+				if r.Type == "SEMVER" || r.Type == "ECOSYSTEM" {
+					for _, ev := range r.Events {
+						if ev.Fixed != "" {
+							fixedVersion = ev.Fixed
+							break
+						}
+					}
+				}
+				if fixedVersion != "" {
+					break
+				}
+			}
+			if fixedVersion != "" {
+				break
+			}
+		}
+
+		// Pass 2: Fallback to any range where fixed is not a 40-character commit hash
+		if fixedVersion == "" {
+			for _, aff := range v.Affected {
+				for _, r := range aff.Ranges {
+					for _, ev := range r.Events {
+						if ev.Fixed != "" && len(ev.Fixed) < 40 {
+							fixedVersion = ev.Fixed
+							break
+						}
+					}
+					if fixedVersion != "" {
+						break
+					}
+				}
+				if fixedVersion != "" {
+					break
+				}
+			}
+		}
+
 		vuln := Vulnerability{
-			ID:      v.ID,
-			Summary: summary,
+			ID:           v.ID,
+			Summary:      summary,
+			FixedVersion: fixedVersion,
 		}
 
 		// Prefer a CVE alias over the OSV/GHSA ID

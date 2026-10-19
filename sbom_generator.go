@@ -84,6 +84,18 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 				Name:  "vuln:cveID",
 				Value: fmt.Sprintf("%s (CVSS:%.1f EPSS:%.5f)", v.CVEID, v.CVSS, v.EPSS),
 			})
+			if v.FixedVersion != "" {
+				comp.Properties = append(comp.Properties, SBOMProperty{
+					Name:  "vuln:fixedVersion",
+					Value: fmt.Sprintf("%s: >= %s", v.CVEID, v.FixedVersion),
+				})
+			}
+			if v.IsKEV {
+				comp.Properties = append(comp.Properties, SBOMProperty{
+					Name:  "vuln:cisaKEV",
+					Value: "true",
+				})
+			}
 		}
 
 		sbom.Components = append(sbom.Components, comp)
@@ -115,6 +127,8 @@ func buildPURL(pkg Package) string {
 		return fmt.Sprintf("pkg:composer/%s@%s", pkg.Name, pkg.Version)
 	case "RubyGems":
 		return fmt.Sprintf("pkg:gem/%s@%s", pkg.Name, pkg.Version)
+	case "ConanCenter":
+		return fmt.Sprintf("pkg:conan/%s@%s", pkg.Name, pkg.Version)
 	default:
 		return fmt.Sprintf("pkg:generic/%s@%s", pkg.Name, pkg.Version)
 	}

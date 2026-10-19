@@ -25,6 +25,8 @@ func PrintReport(results []ScanResult) {
 	noneCount := 0
 	staleCount := 0
 	totalVulns := 0
+	kevCount := 0
+	fixCount := 0
 
 	for _, r := range results {
 		fmt.Printf("\n[+] %s (%s)\n", r.Pkg.Name, r.Pkg.Ecosystem)
@@ -54,9 +56,28 @@ func PrintReport(results []ScanResult) {
 				if v.ID != "" && v.ID != v.CVEID {
 					idDisplay = fmt.Sprintf("%s (%s)", v.CVEID, v.ID)
 				}
-				fmt.Printf("      - %s [CVSS: %.1f | EPSS: %.5f]\n", idDisplay, v.CVSS, v.EPSS)
+				kevTag := ""
+				if v.IsKEV {
+					kevCount++
+					if v.KEVRansomware {
+						kevTag = " | CISA-KEV: RANSOMWARE"
+					} else {
+						kevTag = " | CISA-KEV"
+					}
+				}
+				fmt.Printf("      - %s [CVSS: %.1f | EPSS: %.5f%s]\n", idDisplay, v.CVSS, v.EPSS, kevTag)
 				if v.Summary != "" {
 					fmt.Printf("        Summary : %s\n", v.Summary)
+				}
+				if v.IsKEV {
+					fmt.Printf("        Warning : Listed in CISA Known Exploited Vulnerabilities (KEV) catalog!\n")
+					if v.KEVRansomware {
+						fmt.Printf("        Threat  : Actively weaponized in known ransomware campaigns!\n")
+					}
+				}
+				if v.FixedVersion != "" {
+					fixCount++
+					fmt.Printf("        Fix     : Upgrade to >= %s\n", v.FixedVersion)
 				}
 			}
 			totalVulns += len(r.Vulnerabilities)
@@ -96,6 +117,10 @@ func PrintReport(results []ScanResult) {
 		fmt.Printf("Ecosystems Scanned     : %s (%d)\n", strings.Join(ecoList, ", "), len(ecoList))
 	}
 	fmt.Printf("Total Vulnerabilities  : %d\n", totalVulns)
+	if kevCount > 0 {
+		fmt.Printf("CISA KEV Exploited     : %d (ACTIVELY EXPLOITED THREATS)\n", kevCount)
+	}
+	fmt.Printf("Remediations Available : %d\n", fixCount)
 	fmt.Printf("Stale Packages         : %d\n", staleCount)
 	fmt.Printf("\nPriority Tier Breakdown:\n")
 	fmt.Printf("  CRITICAL-EXPLOITABLE : %d\n", criticalCount)

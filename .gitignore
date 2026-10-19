@@ -9,6 +9,7 @@ dependency_risk_tracker
 
 # Test & scan output artifacts
 sbom.json
+results.sarif
 sample-package.json
 test-package.json
 

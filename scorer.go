@@ -1,10 +1,10 @@
 package main
 
-func Score(cvss float64, epss float64, hasCVE bool) string {
+func Score(cvss float64, epss float64, hasCVE bool, isKEV bool) string {
 	if !hasCVE {
 		return "NONE"
 	}
-	if cvss >= 7.0 && epss >= 0.2 {
+	if isKEV || (cvss >= 7.0 && epss >= 0.2) {
 		return "CRITICAL-EXPLOITABLE"
 	}
 	if cvss >= 7.0 {
