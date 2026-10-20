@@ -476,17 +476,17 @@ func TestIntelligentContentAndSourceDiscovery(t *testing.T) {
 		found[p.Name] = p.Ecosystem
 	}
 	expectedImports := map[string]string{
-		"requests":                             "PyPI",
-		"beautifulsoup4":                       "PyPI",
-		"express":                              "npm",
-		"github.com/gin-gonic/gin":             "Go",
-		"serde":                                "crates.io",
-		"openssl":                              "ConanCenter",
-		"org.apache.logging.log4j:log4j-core":  "Maven",
-		"Newtonsoft.Json":                      "NuGet",
-		"monolog/logger":                       "Packagist",
-		"sinatra":                              "RubyGems",
-		"http":                                 "Pub",
+		"requests":                            "PyPI",
+		"beautifulsoup4":                      "PyPI",
+		"express":                             "npm",
+		"github.com/gin-gonic/gin":            "Go",
+		"serde":                               "crates.io",
+		"openssl":                             "ConanCenter",
+		"org.apache.logging.log4j:log4j-core": "Maven",
+		"Newtonsoft.Json":                     "NuGet",
+		"monolog/logger":                      "Packagist",
+		"sinatra":                             "RubyGems",
+		"http":                                "Pub",
 	}
 	for name, eco := range expectedImports {
 		if found[name] != eco {

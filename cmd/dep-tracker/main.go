@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -29,17 +30,100 @@ const (
 	maxStalenessConcurrency = 24
 )
 
+const appVersion = "1.0.0"
+
+// cliOptions holds the command-line flags accepted by dep-tracker.
+type cliOptions struct {
+	sbomPath  string
+	sarifPath string
+	jsonOut   bool
+	staleOnly bool
+}
+
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "Dependency Risk Tracker v"+appVersion)
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Usage: dep-tracker scan <path> [options]")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Options:")
+	fmt.Fprintln(os.Stderr, "  --sbom <file>    Write the CycloneDX v1.4 SBOM to <file> (default: sbom.json)")
+	fmt.Fprintln(os.Stderr, "  --sarif <file>   Write the OASIS SARIF v2.1.0 report to <file> (default: results.sarif)")
+	fmt.Fprintln(os.Stderr, "  --json           Print the full risk report as JSON instead of the text report")
+	fmt.Fprintln(os.Stderr, "  --stale-only     Only show packages with no release in over two years")
+	fmt.Fprintln(os.Stderr, "  --version        Print the version and exit")
+	fmt.Fprintln(os.Stderr, "  -h, --help       Show this help and exit")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Examples:")
+	fmt.Fprintln(os.Stderr, "  dep-tracker scan .                        # Scan entire project/repo recursively")
+	fmt.Fprintln(os.Stderr, "  dep-tracker scan package-lock.json        # Scan a specific manifest or lockfile")
+	fmt.Fprintln(os.Stderr, "  dep-tracker scan . --sbom out/sbom.json   # Choose where the SBOM is written")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Discovery layers: manifests/lockfiles -> installed environments -> source-code imports")
+}
+
+// parseArgs parses "scan <path> [options]" (the "scan" keyword is optional).
+func parseArgs(args []string) (cliOptions, string, error) {
+	opts := cliOptions{sbomPath: "sbom.json", sarifPath: "results.sarif"}
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-h" || a == "--help" || a == "help":
+			printUsage()
+			os.Exit(0)
+		case a == "--version" || a == "-v":
+			fmt.Println("dep-tracker " + appVersion)
+			os.Exit(0)
+		case a == "--json":
+			opts.jsonOut = true
+		case a == "--stale-only":
+			opts.staleOnly = true
+		case a == "--sbom" || a == "--sarif":
+			if i+1 >= len(args) {
+				return opts, "", fmt.Errorf("%s requires a file path", a)
+			}
+			i++
+			if a == "--sbom" {
+				opts.sbomPath = args[i]
+			} else {
+				opts.sarifPath = args[i]
+			}
+		case strings.HasPrefix(a, "--sbom="):
+			opts.sbomPath = strings.TrimPrefix(a, "--sbom=")
+		case strings.HasPrefix(a, "--sarif="):
+			opts.sarifPath = strings.TrimPrefix(a, "--sarif=")
+		case strings.HasPrefix(a, "-"):
+			return opts, "", fmt.Errorf("unknown option %q", a)
+		default:
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) > 0 && positional[0] == "scan" {
+		positional = positional[1:]
+	}
+	if len(positional) != 1 {
+		return opts, "", fmt.Errorf("expected exactly one path to scan")
+	}
+	return opts, positional[0], nil
+}
+
 func main() {
-	if len(os.Args) < 3 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "Usage: dep-tracker scan <path>")
-		fmt.Fprintln(os.Stderr, "  Examples:")
-		fmt.Fprintln(os.Stderr, "    dep-tracker scan .                  # Scan entire project/repo recursively")
-		fmt.Fprintln(os.Stderr, "    dep-tracker scan package.json       # Scan specific manifest")
-		fmt.Fprintln(os.Stderr, "    dep-tracker scan package-lock.json  # Scan specific lockfile")
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+	opts, targetPath, err := parseArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
+		printUsage()
 		os.Exit(1)
 	}
 
-	targetPath := os.Args[2]
+	// In --json mode, progress messages go to stderr so stdout stays valid JSON.
+	info := os.Stdout
+	if opts.jsonOut {
+		info = os.Stderr
+	}
 
 	// 1. Parse manifest or project directory
 	packages, err := ParsePath(targetPath)
@@ -47,7 +131,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Total unique dependencies to analyze: %d\n\n", len(packages))
+	fmt.Fprintf(info, "Total unique dependencies to analyze: %d\n\n", len(packages))
 
 	// 2. Concurrently check staleness, fetch CISA KEV catalog, and batch-query OSV
 	stalenessSem := make(chan struct{}, maxStalenessConcurrency)
@@ -237,20 +321,37 @@ func main() {
 		})
 	}
 
-	// 8. Print report
-	PrintReport(results)
-
-	// 9. Generate SBOM and SARIF reports
-	if err := GenerateSBOM(results, "sbom.json"); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: SBOM generation failed: %v\n", err)
+	// 8. Print report (optionally filtered to stale packages, optionally as JSON)
+	shown := results
+	if opts.staleOnly {
+		shown = nil
+		for _, r := range results {
+			if r.Staleness.IsStale {
+				shown = append(shown, r)
+			}
+		}
+	}
+	if opts.jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(shown); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: JSON encoding failed: %v\n", err)
+		}
 	} else {
-		fmt.Println("\nSBOM saved to sbom.json")
+		PrintReport(shown)
 	}
 
-	if err := GenerateSARIF(results, "results.sarif"); err != nil {
+	// 9. Generate SBOM and SARIF reports (always cover the full result set)
+	if err := GenerateSBOM(results, opts.sbomPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: SBOM generation failed: %v\n", err)
+	} else {
+		fmt.Fprintf(info, "\nSBOM saved to %s\n", opts.sbomPath)
+	}
+
+	if err := GenerateSARIF(results, opts.sarifPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: SARIF generation failed: %v\n", err)
 	} else {
-		fmt.Println("SARIF report saved to results.sarif")
+		fmt.Fprintf(info, "SARIF report saved to %s\n", opts.sarifPath)
 	}
 
 	// 10. Exit with code 1 if any CRITICAL-EXPLOITABLE found

@@ -1,3 +1,3 @@
-module dependency_risk_tracker
+module github.com/nyumuharon/dependency-tracker
 
 go 1.26.3
