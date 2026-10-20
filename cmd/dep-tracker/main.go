@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -40,36 +41,90 @@ type cliOptions struct {
 	staleOnly bool
 }
 
-func printUsage() {
-	fmt.Fprintln(os.Stderr, "Dependency Risk Tracker v"+appVersion)
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Usage: dep-tracker scan <path> [options]")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Options:")
-	fmt.Fprintln(os.Stderr, "  --sbom <file>    Write the CycloneDX v1.4 SBOM to <file> (default: sbom.json)")
-	fmt.Fprintln(os.Stderr, "  --sarif <file>   Write the OASIS SARIF v2.1.0 report to <file> (default: results.sarif)")
-	fmt.Fprintln(os.Stderr, "  --json           Print the full risk report as JSON instead of the text report")
-	fmt.Fprintln(os.Stderr, "  --stale-only     Only show packages with no release in over two years")
-	fmt.Fprintln(os.Stderr, "  --version        Print the version and exit")
-	fmt.Fprintln(os.Stderr, "  -h, --help       Show this help and exit")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Examples:")
-	fmt.Fprintln(os.Stderr, "  dep-tracker scan .                        # Scan entire project/repo recursively")
-	fmt.Fprintln(os.Stderr, "  dep-tracker scan package-lock.json        # Scan a specific manifest or lockfile")
-	fmt.Fprintln(os.Stderr, "  dep-tracker scan . --sbom out/sbom.json   # Choose where the SBOM is written")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Discovery layers: manifests/lockfiles -> installed environments -> source-code imports")
+const helpText = `Dependency Risk Tracker v%[1]s
+Software composition analysis: finds your project's dependencies, checks them
+for known vulnerabilities, real-world exploitation and abandonment, and tells
+you what to fix first.
+
+USAGE
+  dep-tracker <command> [arguments] [options]
+
+COMMANDS
+  scan <path>      Scan a project directory (recursively) or a single manifest,
+                   lockfile or environment file, print a prioritised risk
+                   report, and write an SBOM and a SARIF report.
+  help             Show this help.
+  version          Print the version number.
+
+SCAN OPTIONS
+  --sbom <file>    Where to write the CycloneDX v1.4 SBOM.
+                   Default: sbom.json in the current directory.
+  --sarif <file>   Where to write the OASIS SARIF v2.1.0 report
+                   (for GitHub Code Scanning / CI). Default: results.sarif
+  --json           Print the full risk report as JSON on stdout instead of
+                   the text report (progress messages go to stderr).
+  --stale-only     Only show packages with no upstream release in over two
+                   years (730 days). The SBOM/SARIF still cover everything.
+  -h, --help       Show this help.
+  -v, --version    Print the version number.
+
+HOW DEPENDENCIES ARE FOUND
+  Layer 1  Manifests & lockfiles: npm/yarn/pnpm, PyPI (requirements, poetry,
+           Pipfile, uv, pyproject), Maven/Gradle, NuGet, Cargo, Go modules,
+           Composer, RubyGems, Conan/vcpkg/CMake, Pub, Hex, SwiftPM.
+  Layer 2  Installed environments: venv/.venv, node_modules,
+           obj/project.assets.json, vendor/composer/installed.json,
+           vendor/modules.txt, vendor/bundle, vcpkg_installed, .dart_tool.
+  Layer 3  Source-code imports (used when no manifest exists): Python,
+           JS/TS, Go, Rust, C/C++, Java/Kotlin, C#, PHP, Ruby, Dart.
+
+PRIORITY TIERS
+  CRITICAL-EXPLOITABLE  In the CISA KEV catalog, or CVSS >= 7.0 and EPSS >= 0.20
+  HIGH                  CVSS >= 7.0
+  MEDIUM                CVSS 4.0 - 6.9
+  LOW                   CVSS below 4.0
+  NONE                  No known vulnerabilities
+
+EXIT CODES
+  0  Scan finished; no CRITICAL-EXPLOITABLE packages found.
+  1  CRITICAL-EXPLOITABLE package found, or invalid arguments/path.
+
+EXAMPLES
+  dep-tracker scan .                            Scan the current project
+  dep-tracker scan ~/code/my-app                Scan another directory
+  dep-tracker scan package-lock.json            Scan one lockfile
+  dep-tracker scan . --sbom reports/sbom.json --sarif reports/app.sarif
+  dep-tracker scan . --json > report.json       Machine-readable output
+  dep-tracker scan . --stale-only               List abandoned packages
+`
+
+// printUsage writes the full help text to w.
+func printUsage(w io.Writer) {
+	fmt.Fprintf(w, helpText, appVersion)
 }
 
-// parseArgs parses "scan <path> [options]" (the "scan" keyword is optional).
+// parseArgs parses "<command> [arguments] [options]".
+// The "scan" keyword is optional: "dep-tracker ." also scans.
 func parseArgs(args []string) (cliOptions, string, error) {
 	opts := cliOptions{sbomPath: "sbom.json", sarifPath: "results.sarif"}
+	if len(args) > 0 {
+		switch args[0] {
+		case "help":
+			printUsage(os.Stdout)
+			os.Exit(0)
+		case "version":
+			fmt.Println("dep-tracker " + appVersion)
+			os.Exit(0)
+		case "scan":
+			args = args[1:]
+		}
+	}
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "-h" || a == "--help" || a == "help":
-			printUsage()
+		case a == "-h" || a == "--help":
+			printUsage(os.Stdout)
 			os.Exit(0)
 		case a == "--version" || a == "-v":
 			fmt.Println("dep-tracker " + appVersion)
@@ -93,29 +148,25 @@ func parseArgs(args []string) (cliOptions, string, error) {
 		case strings.HasPrefix(a, "--sarif="):
 			opts.sarifPath = strings.TrimPrefix(a, "--sarif=")
 		case strings.HasPrefix(a, "-"):
-			return opts, "", fmt.Errorf("unknown option %q", a)
+			return opts, "", fmt.Errorf("unknown option %q (run 'dep-tracker help')", a)
 		default:
 			positional = append(positional, a)
 		}
 	}
-	if len(positional) > 0 && positional[0] == "scan" {
-		positional = positional[1:]
-	}
 	if len(positional) != 1 {
-		return opts, "", fmt.Errorf("expected exactly one path to scan")
+		return opts, "", fmt.Errorf("expected exactly one path to scan (run 'dep-tracker help')")
 	}
 	return opts, positional[0], nil
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		printUsage()
+		printUsage(os.Stderr)
 		os.Exit(1)
 	}
 	opts, targetPath, err := parseArgs(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
-		printUsage()
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 

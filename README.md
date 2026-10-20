@@ -105,41 +105,56 @@ flowchart TD
 
 ## Installation & Binary Distribution
 
-Because `dep-tracker` is written in pure Go using only the standard library, it compiles into a **single, self-contained native binary** with zero external runtime dependencies.
+Because `dep-tracker` is written in pure Go using only the standard library, it compiles into a **single, self-contained native binary** with zero external runtime dependencies (no Node.js, Python, or Go required on the target machine).
 
-### Option 1: Install via Go (`go install`)
+### Option 1: Standalone Single Binary (Pre-compiled)
+The single binary executable is located at:
 ```bash
-go install github.com/nyumuharon/dependency-tracker@latest
+# Installed directly in user binary path:
+/home/v3ct0r7/bin/dep-tracker
+
+# Or from the project release distribution folder:
+./dist/dep-tracker-linux-amd64
+```
+To install it to your user path:
+```bash
+cp dist/dep-tracker-linux-amd64 ~/bin/dep-tracker
+chmod +x ~/bin/dep-tracker
 ```
 
-### Option 2: Build from Source
+### Option 2: Install via Go (`go install`)
+```bash
+go install ./cmd/dep-tracker
+# or from GitHub:
+go install github.com/nyumuharon/dependency-tracker/cmd/dep-tracker@latest
+```
+
+### Option 3: Build from Source
 ```bash
 git clone https://github.com/nyumuharon/dependency-tracker.git
 cd dependency-tracker
-go build -ldflags="-s -w" -o dep-tracker .
+go build -ldflags="-s -w" -o dep-tracker ./cmd/dep-tracker
 ```
 
-### Option 3: Cross-Compile Standalone Binaries (Windows, Linux, macOS)
-You can distribute pre-built standalone binaries for every operating system and CPU architecture from a single machine:
-
+### Option 4: Cross-Compile Standalone Binaries (Linux, Windows, macOS)
+Use the automated multi-architecture release build script:
 ```bash
-# Linux (x86_64 & ARM64)
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/dep-tracker-linux-amd64 .
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/dep-tracker-linux-arm64 .
-
-# Windows (x86_64 & ARM64)
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/dep-tracker-windows-amd64.exe .
-GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/dep-tracker-windows-arm64.exe .
-
-# macOS (Apple Silicon & Intel)
-GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/dep-tracker-darwin-arm64 .
-GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/dep-tracker-darwin-amd64 .
+chmod +x scripts/build-release.sh
+./scripts/build-release.sh
 ```
+This builds standalone binaries in `dist/` with SHA-256 verification checksums:
+* `dist/dep-tracker-linux-amd64` (Linux x86_64)
+* `dist/dep-tracker-linux-arm64` (Linux ARM64 / Graviton)
+* `dist/dep-tracker-windows-amd64.exe` (Windows x86_64)
+* `dist/dep-tracker-windows-arm64.exe` (Windows ARM64)
+* `dist/dep-tracker-darwin-amd64` (macOS Intel)
+* `dist/dep-tracker-darwin-arm64` (macOS Apple Silicon M1-M4)
+* `dist/SHA256SUMS.txt` (Cryptographic verification checksums)
 
-### Option 4: Distribute via Package Managers (`winget`, `scoop`, `brew`)
-Once you upload your compiled binaries to **GitHub Releases** (automatically or via **GoReleaser**), users can install `dep-tracker` with a single command:
+### Option 5: Distribute via Package Managers (`winget`, `scoop`, `brew`)
+Once you upload your compiled binaries to **GitHub Releases**, users can install `dep-tracker` with a single command:
 
-* **Windows (WinGet)**: Publish a manifest to `microsoft/winget-pkgs` using `wingetcreate new <GitHub-Release-Zip-URL>` (or automate via GoReleaser's `winget:` publisher):
+* **Windows (WinGet)**:
   ```powershell
   winget install NyumuHaron.DependencyRiskTracker
   ```
@@ -154,15 +169,95 @@ Once you upload your compiled binaries to **GitHub Releases** (automatically or 
 
 ---
 
-## Usage
+## Project Directory Organization
 
-### 1. Recursive Project or Workspace Scan
+The codebase is organized following standard Go project conventions:
+
+```
+dependency_risk_tracker/
+├── cmd/
+│   └── dep-tracker/              # Main CLI application entrypoint & subcommands
+│       ├── main.go               # Command-line interface, help handler & orchestration
+│       ├── parsers.go            # Layer 1-3 multi-ecosystem dependency discovery
+│       ├── osv_client.go         # Two-phase batch OSV client & CVSS v3.1 calculator
+│       ├── nvd_client.go         # NIST NVD 2.0 fallback client & disk cache
+│       ├── epss_client.go        # FIRST.org EPSS 30-day exploitation probability client
+│       ├── kev_client.go         # CISA Known Exploited Vulnerabilities (KEV) catalog
+│       ├── staleness_client.go   # Multi-registry staleness checker & PyPI RSS cache
+│       ├── scorer.go             # Two-dimensional risk priority classification
+│       ├── sbom_generator.go     # CycloneDX v1.4 JSON SBOM exporter
+│       └── sarif_generator.go    # OASIS SARIF v2.1.0 GitHub Code Scanning exporter
+├── dist/                         # Compiled standalone release binaries & checksums
+│   ├── dep-tracker-linux-amd64
+│   ├── dep-tracker-linux-arm64
+│   ├── dep-tracker-windows-amd64.exe
+│   ├── dep-tracker-windows-arm64.exe
+│   ├── dep-tracker-darwin-amd64
+│   ├── dep-tracker-darwin-arm64
+│   └── SHA256SUMS.txt
+├── scripts/
+│   └── build-release.sh          # Automated multi-platform compilation script
+├── docs/                         # System architecture & academic documentation
+├── go.mod                        # Go module definition
+├── README.md                     # Technical documentation & usage manual
+├── sbom.json                     # Generated CycloneDX v1.4 SBOM
+└── results.sarif                 # Generated OASIS SARIF v2.1.0 report
+```
+
+---
+
+## Usage & CLI Reference
+
+### 1. Built-in Help Command (`help`)
+View all available commands, options, and layer detection capabilities:
+```bash
+dep-tracker help
+# or
+dep-tracker --help
+```
+
+### 2. Recursive Project or Workspace Scan
 Scan any project directory (manifests, virtual/vendor environments, or raw source code):
 ```bash
 # Scan current directory
-./dep-tracker scan .
+dep-tracker scan .
 
 # Scan an external project directory
+dep-tracker scan /path/to/project
+```
+
+### 3. Single Manifest, Lockfile, or Environment File Scan
+```bash
+dep-tracker scan package-lock.json
+dep-tracker scan requirements.txt
+dep-tracker scan pom.xml
+dep-tracker scan obj/project.assets.json
+```
+
+### 4. Export Compliance Artifacts (CycloneDX SBOM & SARIF)
+```bash
+# Export CycloneDX v1.4 JSON SBOM and OASIS SARIF v2.1.0 report
+dep-tracker scan . --sbom reports/sbom.json --sarif reports/results.sarif
+```
+
+### 5. Machine-Readable JSON Mode (for CI/CD Pipelines)
+```bash
+# Output raw JSON to stdout (progress messages go to stderr)
+dep-tracker scan . --json > scan-report.json
+```
+
+### 6. Filter Unmaintained / Stale Packages Only
+```bash
+# Audit dependencies with no release in over 2 years (730 days)
+dep-tracker scan . --stale-only
+```
+
+### 7. Version Information
+```bash
+dep-tracker version
+# or
+dep-tracker -v
+```
 ./dep-tracker scan /path/to/project
 ```
 

@@ -207,7 +207,7 @@ func ParsePath(targetPath string) ([]Package, error) {
 	}
 
 	if fi.IsDir() {
-		fmt.Printf("Discovering dependency manifests in directory: %s\n", targetPath)
+		fmt.Fprintf(os.Stderr, "Discovering dependency manifests in directory: %s\n", targetPath)
 		pkgs, sources, err := DiscoverDependencies(targetPath)
 		if err != nil {
 			return nil, fmt.Errorf("project discovery failed: %w", err)
@@ -215,11 +215,11 @@ func ParsePath(targetPath string) ([]Package, error) {
 		if len(sources) == 0 && len(pkgs) == 0 {
 			return nil, fmt.Errorf("no dependencies, manifests, environments, or imports found in directory: %s", targetPath)
 		}
-		fmt.Printf("Discovered %d dependency source(s):\n", len(sources))
+		fmt.Fprintf(os.Stderr, "Discovered %d dependency source(s):\n", len(sources))
 		for _, s := range sources {
-			fmt.Printf("  • %s\n", s)
+			fmt.Fprintf(os.Stderr, "  • %s\n", s)
 		}
-		fmt.Println()
+		fmt.Fprintln(os.Stderr)
 		return pkgs, nil
 	}
 
