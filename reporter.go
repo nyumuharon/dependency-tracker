@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -108,6 +109,7 @@ func PrintReport(results []ScanResult) {
 	for e := range ecosystems {
 		ecoList = append(ecoList, e)
 	}
+	sort.Strings(ecoList)
 
 	fmt.Printf("\n%s\n", sep)
 	fmt.Printf("%30s\n", "SUMMARY")

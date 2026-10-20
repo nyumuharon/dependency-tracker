@@ -29,7 +29,7 @@ Dependency Risk Tracker automatically detects and parses the following declarati
 | Ecosystem / Platform | Target Language | Supported Lockfiles (Transitive) | Supported Manifests (Direct) | Upstream Registry |
 | :--- | :--- | :--- | :--- | :--- |
 | **npm** | JavaScript, TypeScript | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | `package.json` | registry.npmjs.org |
-| **PyPI** | Python | `poetry.lock`, `Pipfile.lock` | `requirements.txt` | pypi.org |
+| **PyPI** | Python | `poetry.lock`, `Pipfile.lock`, `uv.lock` | `requirements.txt`, `pyproject.toml` | pypi.org |
 | **Go** | Go | `go.sum` | `go.mod` | proxy.golang.org |
 | **crates.io** | Rust | `Cargo.lock` | `Cargo.toml` | crates.io |
 | **Packagist** | PHP | `composer.lock` | `composer.json` | repo.packagist.org |

@@ -129,6 +129,12 @@ func buildPURL(pkg Package) string {
 		return fmt.Sprintf("pkg:gem/%s@%s", pkg.Name, pkg.Version)
 	case "ConanCenter":
 		return fmt.Sprintf("pkg:conan/%s@%s", pkg.Name, pkg.Version)
+	case "Pub":
+		return fmt.Sprintf("pkg:pub/%s@%s", pkg.Name, pkg.Version)
+	case "Hex":
+		return fmt.Sprintf("pkg:hex/%s@%s", pkg.Name, pkg.Version)
+	case "SwiftURL":
+		return fmt.Sprintf("pkg:swift/%s@%s", pkg.Name, pkg.Version)
 	default:
 		return fmt.Sprintf("pkg:generic/%s@%s", pkg.Name, pkg.Version)
 	}

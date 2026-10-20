@@ -67,14 +67,13 @@ func FetchKEVCatalog() (map[string]KEVEntry, error) {
 	}
 
 	// 2. Fetch fresh catalog from CISA
-	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", cisaKEVURL, nil)
 	if err != nil {
 		return loadStaleCacheOrError(cachePath, err)
 	}
 	req.Header.Set("User-Agent", "dependency-risk-tracker/1.0")
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return loadStaleCacheOrError(cachePath, err)
 	}

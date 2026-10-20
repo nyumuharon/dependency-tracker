@@ -3,42 +3,112 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 type StalenessResult struct {
-	LatestVersion string
-	LastUpdated   time.Time
-	IsStale       bool
+	LatestVersion string    `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+	IsStale       bool      `json:"is_stale"`
+	CachedAt      time.Time `json:"cached_at"`
+}
+
+const stalenessCacheTTL = 12 * time.Hour
+
+var (
+	stalenessCacheOnce sync.Once
+	stalenessCacheMu   sync.RWMutex
+	stalenessCacheData map[string]StalenessResult
+)
+
+func getStalenessCachePath() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = os.TempDir()
+	}
+	dir := filepath.Join(cacheDir, "dependency_risk_tracker")
+	_ = os.MkdirAll(dir, 0755)
+	return filepath.Join(dir, "staleness_cache.json")
+}
+
+func loadStalenessCache() {
+	stalenessCacheOnce.Do(func() {
+		stalenessCacheData = make(map[string]StalenessResult)
+		data, err := os.ReadFile(getStalenessCachePath())
+		if err == nil {
+			_ = json.Unmarshal(data, &stalenessCacheData)
+		}
+	})
+}
+
+func SaveStalenessCache() {
+	stalenessCacheMu.RLock()
+	if len(stalenessCacheData) == 0 {
+		stalenessCacheMu.RUnlock()
+		return
+	}
+	data, err := json.Marshal(stalenessCacheData)
+	stalenessCacheMu.RUnlock()
+	if err == nil {
+		_ = os.WriteFile(getStalenessCachePath(), data, 0644)
+	}
 }
 
 func CheckStaleness(pkg Package) (StalenessResult, error) {
+	loadStalenessCache()
+	cacheKey := strings.ToLower(pkg.Name) + "@" + pkg.Ecosystem
+
+	stalenessCacheMu.RLock()
+	if cached, ok := stalenessCacheData[cacheKey]; ok && time.Since(cached.CachedAt) < stalenessCacheTTL && cached.LatestVersion != "" {
+		stalenessCacheMu.RUnlock()
+		return cached, nil
+	}
+	stalenessCacheMu.RUnlock()
+
+	var res StalenessResult
+	var err error
 	switch pkg.Ecosystem {
 	case "npm":
-		return checkNPMStaleness(pkg.Name)
+		res, err = checkNPMStaleness(pkg.Name)
 	case "PyPI":
-		return checkPyPIStaleness(pkg.Name)
+		res, err = checkPyPIStaleness(pkg.Name)
 	case "Maven":
-		return checkMavenStaleness(pkg.Name)
+		res, err = checkMavenStaleness(pkg.Name)
 	case "NuGet":
-		return checkNuGetStaleness(pkg.Name)
+		res, err = checkNuGetStaleness(pkg.Name)
 	case "Go":
-		return checkGoStaleness(pkg.Name)
+		res, err = checkGoStaleness(pkg.Name)
 	case "crates.io":
-		return checkCratesStaleness(pkg.Name)
+		res, err = checkCratesStaleness(pkg.Name)
 	case "Packagist":
-		return checkPackagistStaleness(pkg.Name)
+		res, err = checkPackagistStaleness(pkg.Name)
 	case "RubyGems":
-		return checkRubyGemsStaleness(pkg.Name)
+		res, err = checkRubyGemsStaleness(pkg.Name)
 	case "ConanCenter":
-		return checkConanStaleness(pkg.Name)
+		res, err = checkConanStaleness(pkg.Name)
+	case "Pub":
+		res, err = checkPubStaleness(pkg.Name)
+	case "Hex":
+		res, err = checkHexStaleness(pkg.Name)
 	default:
 		return StalenessResult{}, fmt.Errorf("unsupported ecosystem: %s", pkg.Ecosystem)
 	}
+
+	if err == nil && res.LatestVersion != "" {
+		res.CachedAt = time.Now()
+		stalenessCacheMu.Lock()
+		stalenessCacheData[cacheKey] = res
+		stalenessCacheMu.Unlock()
+	}
+	return res, err
 }
 
 func isStale(t time.Time) bool {
@@ -52,6 +122,10 @@ func checkNPMStaleness(name string) (StalenessResult, error) {
 		return StalenessResult{}, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return StalenessResult{}, fmt.Errorf("npm registry returned %d", resp.StatusCode)
+	}
 
 	var data struct {
 		DistTags struct {
@@ -83,31 +157,72 @@ func checkNPMStaleness(name string) (StalenessResult, error) {
 
 // ── PyPI ──────────────────────────────────────────────────────────────────────
 func checkPyPIStaleness(name string) (StalenessResult, error) {
-	resp, err := httpClient.Get("https://pypi.org/pypi/" + name + "/json")
+	// Use PyPI's lightweight RSS releases feed (~10 KB vs multi-MB full JSON history)
+	rssURL := "https://pypi.org/rss/project/" + url.PathEscape(name) + "/releases.xml"
+	if resp, err := httpClient.Get(rssURL); err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			var feed struct {
+				Items []struct {
+					Title   string `xml:"title"`
+					PubDate string `xml:"pubDate"`
+				} `xml:"channel>item"`
+			}
+			if xml.NewDecoder(resp.Body).Decode(&feed) == nil && len(feed.Items) > 0 {
+				chosen := feed.Items[0]
+				for _, item := range feed.Items {
+					v := strings.ToLower(strings.TrimSpace(item.Title))
+					if !strings.Contains(v, "a") && !strings.Contains(v, "b") && !strings.Contains(v, "rc") && !strings.Contains(v, "dev") {
+						chosen = item
+						break
+					}
+				}
+				latest := strings.TrimSpace(chosen.Title)
+				t, parseErr := time.Parse(time.RFC1123, strings.TrimSpace(chosen.PubDate))
+				if parseErr != nil {
+					t, parseErr = time.Parse(time.RFC1123Z, strings.TrimSpace(chosen.PubDate))
+				}
+				if parseErr == nil {
+					return StalenessResult{
+						LatestVersion: latest,
+						LastUpdated:   t,
+						IsStale:       isStale(t),
+					}, nil
+				}
+				return StalenessResult{LatestVersion: latest}, nil
+			}
+		}
+	}
+
+	// Fallback to JSON API if RSS feed is unavailable
+	resp, err := httpClient.Get("https://pypi.org/pypi/" + url.PathEscape(name) + "/json")
 	if err != nil {
 		return StalenessResult{}, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return StalenessResult{}, fmt.Errorf("pypi returned %d", resp.StatusCode)
+	}
+
 	var data struct {
 		Info struct {
 			Version string `json:"version"`
 		} `json:"info"`
-		Releases map[string][]struct {
+		URLs []struct {
 			UploadTime string `json:"upload_time_iso_8601"`
-		} `json:"releases"`
+		} `json:"urls"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return StalenessResult{}, err
 	}
 
 	latest := data.Info.Version
-	releases, ok := data.Releases[latest]
-	if !ok || len(releases) == 0 {
+	if len(data.URLs) == 0 {
 		return StalenessResult{LatestVersion: latest}, nil
 	}
 
-	t, err := time.Parse(time.RFC3339, releases[0].UploadTime)
+	t, err := time.Parse(time.RFC3339, data.URLs[0].UploadTime)
 	if err != nil {
 		return StalenessResult{LatestVersion: latest}, nil
 	}
@@ -135,6 +250,10 @@ func checkMavenStaleness(name string) (StalenessResult, error) {
 		return StalenessResult{}, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return StalenessResult{}, fmt.Errorf("maven search returned %d", resp.StatusCode)
+	}
 
 	var data struct {
 		Response struct {
@@ -175,7 +294,7 @@ func splitMavenName(name string) []string {
 func checkNuGetStaleness(name string) (StalenessResult, error) {
 	apiURL := fmt.Sprintf(
 		"https://api.nuget.org/v3/registration5-gz-semver2/%s/index.json",
-		strings.ToLower(name),
+		url.PathEscape(strings.ToLower(name)),
 	)
 
 	resp, err := httpClient.Get(apiURL)
@@ -183,6 +302,10 @@ func checkNuGetStaleness(name string) (StalenessResult, error) {
 		return StalenessResult{}, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return StalenessResult{}, fmt.Errorf("nuget returned %d", resp.StatusCode)
+	}
 
 	var data struct {
 		Items []struct {
@@ -421,4 +544,79 @@ func checkConanStaleness(name string) (StalenessResult, error) {
 	}
 
 	return StalenessResult{}, nil
+}
+
+// ── Dart / Flutter (Pub) ──────────────────────────────────────────────────────
+func checkPubStaleness(name string) (StalenessResult, error) {
+	apiURL := fmt.Sprintf("https://pub.dev/api/packages/%s", url.PathEscape(name))
+	resp, err := httpClient.Get(apiURL)
+	if err != nil {
+		return StalenessResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return StalenessResult{}, fmt.Errorf("pub.dev returned %d", resp.StatusCode)
+	}
+
+	var data struct {
+		Latest struct {
+			Version   string `json:"version"`
+			Published string `json:"published"`
+		} `json:"latest"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return StalenessResult{}, err
+	}
+
+	t, err := time.Parse(time.RFC3339, data.Latest.Published)
+	if err != nil {
+		return StalenessResult{LatestVersion: data.Latest.Version}, nil
+	}
+
+	return StalenessResult{
+		LatestVersion: data.Latest.Version,
+		LastUpdated:   t,
+		IsStale:       isStale(t),
+	}, nil
+}
+
+// ── Elixir (Hex) ──────────────────────────────────────────────────────────────
+func checkHexStaleness(name string) (StalenessResult, error) {
+	apiURL := fmt.Sprintf("https://hex.pm/api/packages/%s", url.PathEscape(name))
+	resp, err := httpClient.Get(apiURL)
+	if err != nil {
+		return StalenessResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return StalenessResult{}, fmt.Errorf("hex.pm returned %d", resp.StatusCode)
+	}
+
+	var data struct {
+		Releases []struct {
+			Version    string `json:"version"`
+			InsertedAt string `json:"inserted_at"`
+		} `json:"releases"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return StalenessResult{}, err
+	}
+
+	if len(data.Releases) == 0 {
+		return StalenessResult{}, nil
+	}
+
+	latest := data.Releases[0]
+	t, err := time.Parse(time.RFC3339, latest.InsertedAt)
+	if err != nil {
+		return StalenessResult{LatestVersion: latest.Version}, nil
+	}
+
+	return StalenessResult{
+		LatestVersion: latest.Version,
+		LastUpdated:   t,
+		IsStale:       isStale(t),
+	}, nil
 }

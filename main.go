@@ -14,6 +14,21 @@ type Package struct {
 	ManifestPath string
 }
 
+// Key returns a unique identifier for a specific package name, version, and ecosystem.
+func (p Package) Key() string {
+	return p.Name + "@" + p.Version + "@" + p.Ecosystem
+}
+
+// StalenessKey returns a unique identifier for a package name and ecosystem on an upstream registry.
+func (p Package) StalenessKey() string {
+	return p.Name + "@" + p.Ecosystem
+}
+
+const (
+	maxOSVConcurrency       = 24
+	maxStalenessConcurrency = 24
+)
+
 func main() {
 	if len(os.Args) < 3 || os.Args[1] != "scan" {
 		fmt.Fprintln(os.Stderr, "Usage: dep-tracker scan <path>")
@@ -34,45 +49,75 @@ func main() {
 	}
 	fmt.Printf("Total unique dependencies to analyze: %d\n\n", len(packages))
 
-	// 2. Concurrently check staleness for all packages in parallel
+	// 2. Concurrently check staleness, fetch CISA KEV catalog, and batch-query OSV
+	stalenessSem := make(chan struct{}, maxStalenessConcurrency)
 	stalenessMap := make(map[string]StalenessResult)
+	stalenessQueued := make(map[string]bool)
 	var stalenessMu sync.Mutex
 	var stalenessWg sync.WaitGroup
 
 	for _, pkg := range packages {
+		sKey := pkg.StalenessKey()
+		if stalenessQueued[sKey] {
+			continue
+		}
+		stalenessQueued[sKey] = true
+
 		stalenessWg.Add(1)
-		go func(p Package) {
+		go func(p Package, key string) {
 			defer stalenessWg.Done()
+			stalenessSem <- struct{}{}
 			st, err := CheckStaleness(p)
+			<-stalenessSem
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: staleness check failed for %s: %v\n", p.Name, err)
 			}
 			stalenessMu.Lock()
-			stalenessMap[p.Name] = st
+			stalenessMap[key] = st
 			stalenessMu.Unlock()
-		}(pkg)
+		}(pkg, sKey)
 	}
 
-	// 3. Concurrently query OSV for all packages (fetches full vulnerability data, summaries & CVE aliases)
-	pkgVulns := make(map[string][]Vulnerability)
-	var osvMu sync.Mutex
-	var osvWg sync.WaitGroup
+	// Pre-fetch CISA KEV catalog in background while OSV queries run
+	var kevCatalog map[string]KEVEntry
+	var kevWg sync.WaitGroup
+	kevWg.Add(1)
+	go func() {
+		defer kevWg.Done()
+		var err error
+		kevCatalog, err = FetchKEVCatalog()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: CISA KEV catalog fetch failed: %v\n", err)
+		}
+	}()
 
-	for _, pkg := range packages {
-		osvWg.Add(1)
-		go func(p Package) {
-			defer osvWg.Done()
-			vulns, err := QueryOSV(p)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: OSV failed for %s: %v\n", p.Name, err)
-				return
-			}
-			osvMu.Lock()
-			pkgVulns[p.Name] = vulns
-			osvMu.Unlock()
-		}(pkg)
+	// 3. Fast two-phase OSV query: batch check all packages first, then fetch details only for vulnerable packages
+	pkgVulns, err := QueryOSVBatch(packages)
+	if err != nil {
+		// Fallback to individual concurrent queries if batch endpoint fails
+		osvSem := make(chan struct{}, maxOSVConcurrency)
+		pkgVulns = make(map[string][]Vulnerability)
+		var osvMu sync.Mutex
+		var osvWg sync.WaitGroup
+
+		for _, pkg := range packages {
+			osvWg.Add(1)
+			go func(p Package) {
+				defer osvWg.Done()
+				osvSem <- struct{}{}
+				vulns, err := QueryOSV(p)
+				<-osvSem
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: OSV failed for %s: %v\n", p.Name, err)
+					return
+				}
+				osvMu.Lock()
+				pkgVulns[p.Key()] = vulns
+				osvMu.Unlock()
+			}(pkg)
+		}
+		osvWg.Wait()
 	}
-	osvWg.Wait()
 
 	// 4. Collect unique CVE IDs
 	var allCVEIDs []string
@@ -87,15 +132,8 @@ func main() {
 		}
 	}
 
-	// 4. Query CISA KEV catalog for known actively exploited vulnerabilities
-	var kevCatalog map[string]KEVEntry
-	if len(allCVEIDs) > 0 {
-		var err error
-		kevCatalog, err = FetchKEVCatalog()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: CISA KEV catalog fetch failed: %v\n", err)
-		}
-	}
+	// Wait for background KEV catalog load
+	kevWg.Wait()
 
 	// Match CISA KEV status to discovered vulnerabilities
 	for pkgName, vulns := range pkgVulns {
@@ -109,19 +147,49 @@ func main() {
 		}
 	}
 
-	// 5. Query NVD only as a fallback for CVEs that lacked a CVSS vector in OSV
+	// 5. Concurrently query NVD fallback (for CVEs lacking CVSS) and FIRST EPSS batch scores
+	var epssScores map[string]float64
+	var epssWg sync.WaitGroup
+	epssWg.Add(1)
+	go func() {
+		defer epssWg.Done()
+		var epssErr error
+		epssScores, epssErr = QueryEPSS(allCVEIDs)
+		if epssErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: EPSS query failed: %v\n", epssErr)
+		}
+	}()
+
 	nvdScores := make(map[string]float64)
+	nvdQueued := make(map[string]bool)
+	var nvdMu sync.Mutex
+	var nvdWg sync.WaitGroup
+	nvdSem := make(chan struct{}, 5)
+
 	for _, vulns := range pkgVulns {
 		for _, v := range vulns {
-			if v.CVSS == 0 && strings.HasPrefix(v.CVEID, "CVE-") && nvdScores[v.CVEID] == 0 {
-				if score, err := QueryNVD(v.CVEID); err == nil && score > 0 {
-					nvdScores[v.CVEID] = score
-				}
+			if v.CVSS == 0 && strings.HasPrefix(v.CVEID, "CVE-") && !nvdQueued[v.CVEID] {
+				nvdQueued[v.CVEID] = true
+				nvdWg.Add(1)
+				go func(id string) {
+					defer nvdWg.Done()
+					nvdSem <- struct{}{}
+					score, err := QueryNVD(id)
+					<-nvdSem
+					if err == nil && score > 0 {
+						nvdMu.Lock()
+						nvdScores[id] = score
+						nvdMu.Unlock()
+					}
+				}(v.CVEID)
 			}
 		}
 	}
+	nvdWg.Wait()
+	SaveNVDCache()
+	epssWg.Wait()
 
-	// Assign fallback NVD CVSS scores to vulnerabilities that needed it
+	// Assign fallback NVD CVSS and EPSS scores to vulnerabilities
 	for pkgName, vulns := range pkgVulns {
 		for i, v := range vulns {
 			if v.CVSS == 0 {
@@ -129,31 +197,20 @@ func main() {
 					pkgVulns[pkgName][i].CVSS = score
 				}
 			}
-		}
-	}
-
-	// 6. Batch EPSS query
-	epssScores, err := QueryEPSS(allCVEIDs)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: EPSS query failed: %v\n", err)
-	}
-
-	// Attach EPSS scores to vulnerabilities
-	for pkgName, vulns := range pkgVulns {
-		for i, v := range vulns {
 			if score, ok := epssScores[v.CVEID]; ok {
 				pkgVulns[pkgName][i].EPSS = score
 			}
 		}
 	}
 
-	// Wait for concurrent staleness checks to complete
+	// Wait for concurrent staleness checks to complete and persist cache
 	stalenessWg.Wait()
+	SaveStalenessCache()
 
 	// 7. Build scan results
 	var results []ScanResult
 	for _, pkg := range packages {
-		vulns := pkgVulns[pkg.Name]
+		vulns := pkgVulns[pkg.Key()]
 
 		// Find highest CVSS and EPSS across all vulns for this package, and check for active KEV
 		var maxCVSS, maxEPSS float64
@@ -176,7 +233,7 @@ func main() {
 			Pkg:             pkg,
 			Vulnerabilities: vulns,
 			PriorityTier:    tier,
-			Staleness:       stalenessMap[pkg.Name],
+			Staleness:       stalenessMap[pkg.StalenessKey()],
 		})
 	}
 

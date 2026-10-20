@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,7 +17,16 @@ const (
 	osvBatchURL = "https://api.osv.dev/v1/querybatch"
 )
 
-var httpClient = &http.Client{Timeout: 15 * time.Second}
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        128,
+		MaxIdleConnsPerHost: 32,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
 
 type Vulnerability struct {
 	CVEID         string
@@ -151,7 +161,29 @@ func parseVulns(res osvResponse) []Vulnerability {
 		vulns = append(vulns, vuln)
 	}
 
-	return vulns
+	// Deduplicate advisories that share the same CVE ID (e.g., GHSA + PYSEC for the same CVE),
+	// merging CVSS, FixedVersion, and Summary so the richest metadata is preserved.
+	var deduped []Vulnerability
+	idxByCVE := make(map[string]int)
+	for _, v := range vulns {
+		if existingIdx, exists := idxByCVE[v.CVEID]; exists {
+			ex := &deduped[existingIdx]
+			if v.CVSS > ex.CVSS {
+				ex.CVSS = v.CVSS
+			}
+			if ex.FixedVersion == "" && v.FixedVersion != "" {
+				ex.FixedVersion = v.FixedVersion
+			}
+			if ex.Summary == "" && v.Summary != "" {
+				ex.Summary = v.Summary
+			}
+			continue
+		}
+		idxByCVE[v.CVEID] = len(deduped)
+		deduped = append(deduped, v)
+	}
+
+	return deduped
 }
 
 func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
@@ -170,10 +202,16 @@ func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
 
 		var bq osvBatchQuery
 		for _, pkg := range chunk {
+			version := pkg.Version
+			if version == "latest" {
+				if st, err := CheckStaleness(pkg); err == nil && st.LatestVersion != "" {
+					version = st.LatestVersion
+				}
+			}
 			var q osvQuery
 			q.Package.Name = pkg.Name
 			q.Package.Ecosystem = pkg.Ecosystem
-			q.Version = pkg.Version
+			q.Version = version
 			bq.Queries = append(bq.Queries, q)
 		}
 
@@ -199,9 +237,33 @@ func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
 			return nil, fmt.Errorf("osv batch decode: %w", decodeErr)
 		}
 
+		// Only packages with >= 1 vulnerability in the batch response need a full detail query
+		var vulnPkgs []Package
 		for idx, item := range batchResp.Results {
-			pkg := chunk[idx]
-			resultMap[pkg.Name] = parseVulns(item)
+			if idx < len(chunk) && len(item.Vulns) > 0 {
+				vulnPkgs = append(vulnPkgs, chunk[idx])
+			}
+		}
+
+		if len(vulnPkgs) > 0 {
+			sem := make(chan struct{}, 20)
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+			for _, vp := range vulnPkgs {
+				wg.Add(1)
+				go func(p Package) {
+					defer wg.Done()
+					sem <- struct{}{}
+					vulns, err := QueryOSV(p)
+					<-sem
+					if err == nil {
+						mu.Lock()
+						resultMap[p.Key()] = vulns
+						mu.Unlock()
+					}
+				}(vp)
+			}
+			wg.Wait()
 		}
 	}
 
@@ -209,11 +271,18 @@ func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
 }
 
 func QueryOSV(pkg Package) ([]Vulnerability, error) {
+	version := pkg.Version
+	if version == "latest" {
+		if st, err := CheckStaleness(pkg); err == nil && st.LatestVersion != "" {
+			version = st.LatestVersion
+		}
+	}
+
 	// Build the request body
 	var q osvQuery
 	q.Package.Name = pkg.Name
 	q.Package.Ecosystem = pkg.Ecosystem
-	q.Version = pkg.Version
+	q.Version = version
 
 	body, err := json.Marshal(q)
 	if err != nil {

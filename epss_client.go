@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 )
@@ -27,6 +28,11 @@ func QueryEPSS(cveIDs []string) (map[string]float64, error) {
 		resp, err := httpClient.Get(url)
 		if err != nil {
 			return scores, fmt.Errorf("epss request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return scores, fmt.Errorf("epss returned status %d", resp.StatusCode)
 		}
 
 		var result struct {
