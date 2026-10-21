@@ -27,5 +27,21 @@ done
 cp "$OUT/dep-tracker-macos-amd64" "$OUT/dep-tracker-darwin-amd64"
 cp "$OUT/dep-tracker-macos-arm64" "$OUT/dep-tracker-darwin-arm64"
 
+# Create compressed archives for much faster download speeds
+if command -v zip >/dev/null 2>&1; then
+  echo "Compressing Windows archive (zip)..."
+  (cd "$OUT" && zip -9 -q "dep-tracker-windows-amd64.zip" "dep-tracker-windows-amd64.exe")
+fi
+
+if command -v tar >/dev/null 2>&1; then
+  echo "Compressing Linux and macOS archives (tar.gz)..."
+  (cd "$OUT" && tar -czf "dep-tracker-linux-amd64.tar.gz" "dep-tracker-linux-amd64")
+  (cd "$OUT" && tar -czf "dep-tracker-linux-arm64.tar.gz" "dep-tracker-linux-arm64")
+  (cd "$OUT" && tar -czf "dep-tracker-macos-amd64.tar.gz" "dep-tracker-macos-amd64")
+  (cd "$OUT" && tar -czf "dep-tracker-macos-arm64.tar.gz" "dep-tracker-macos-arm64")
+  (cd "$OUT" && cp "dep-tracker-macos-amd64.tar.gz" "dep-tracker-darwin-amd64.tar.gz")
+  (cd "$OUT" && cp "dep-tracker-macos-arm64.tar.gz" "dep-tracker-darwin-arm64.tar.gz")
+fi
+
 (cd "$OUT" && sha256sum dep-tracker-* > SHA256SUMS.txt)
-echo "Done. Binaries written to $OUT/"
+echo "Done. Binaries and archives written to $OUT/"

@@ -40,14 +40,7 @@ jobs:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}
           name: Release ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}
           files: |
-            dist/dep-tracker-linux-amd64
-            dist/dep-tracker-linux-arm64
-            dist/dep-tracker-windows-amd64.exe
-            dist/dep-tracker-macos-amd64
-            dist/dep-tracker-macos-arm64
-            dist/dep-tracker-darwin-amd64
-            dist/dep-tracker-darwin-arm64
-            dist/SHA256SUMS.txt
+            dist/*
           generate_release_notes: true
           draft: false
           prerelease: false

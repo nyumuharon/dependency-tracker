@@ -135,11 +135,12 @@ chmod +x dep-tracker
 sudo mv dep-tracker /usr/local/bin/
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell / Command Prompt):**
 ```powershell
-Invoke-WebRequest -Uri https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.exe -OutFile dep-tracker.exe
+curl.exe -L -o dep-tracker.exe https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.exe
 .\dep-tracker.exe --help
 ```
+*(Or download the `.zip` archive from [Releases](https://github.com/nyumuharon/dependency-tracker/releases/latest) and extract `dep-tracker-windows-amd64.exe`)*
 
 ---
 
