@@ -23,5 +23,9 @@ for t in "${targets[@]}"; do
     go build -trimpath -ldflags="-s -w" -o "$OUT/$name" ./cmd/dep-tracker
 done
 
+# Provide darwin-* aliases for macOS binaries to match README paths
+cp "$OUT/dep-tracker-macos-amd64" "$OUT/dep-tracker-darwin-amd64"
+cp "$OUT/dep-tracker-macos-arm64" "$OUT/dep-tracker-darwin-arm64"
+
 (cd "$OUT" && sha256sum dep-tracker-* > SHA256SUMS.txt)
 echo "Done. Binaries written to $OUT/"
