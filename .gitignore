@@ -1,6 +1,6 @@
 # Compiled binaries
-dep-tracker
-dependency_risk_tracker
+/dep-tracker
+/dependency_risk_tracker
 *.exe
 *.exe~
 *.dll

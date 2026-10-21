@@ -31,7 +31,7 @@ const (
 	maxStalenessConcurrency = 24
 )
 
-const appVersion = "1.0.0"
+const appVersion = "1.0.5"
 
 // cliOptions holds the command-line flags accepted by dep-tracker.
 type cliOptions struct {
@@ -53,6 +53,7 @@ COMMANDS
   scan <path>      Scan a project directory (recursively) or a single manifest,
                    lockfile or environment file, print a prioritised risk
                    report, and write an SBOM and a SARIF report.
+  update           Check GitHub Releases and upgrade dep-tracker in-place.
   help             Show this help.
   version          Print the version number.
 
@@ -164,6 +165,15 @@ func main() {
 		printUsage(os.Stderr)
 		os.Exit(1)
 	}
+
+	if os.Args[1] == "update" {
+		if err := runUpdate(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	opts, targetPath, err := parseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

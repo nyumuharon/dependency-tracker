@@ -219,6 +219,12 @@ dep-tracker version
 dep-tracker -v
 ```
 
+### 8. Self-Update in Place
+```bash
+dep-tracker update
+```
+Automatically checks GitHub Releases for new versions and upgrades the `dep-tracker` binary in-place.
+
 ---
 
 ## Testing
