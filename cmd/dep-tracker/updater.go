@@ -18,17 +18,45 @@ type githubRelease struct {
 	Body    string `json:"body"`
 }
 
+func parseSemver(v string) (int, int, int) {
+	v = strings.TrimPrefix(v, "v")
+	parts := strings.Split(v, ".")
+	var major, minor, patch int
+	if len(parts) >= 1 {
+		fmt.Sscanf(parts[0], "%d", &major)
+	}
+	if len(parts) >= 2 {
+		fmt.Sscanf(parts[1], "%d", &minor)
+	}
+	if len(parts) >= 3 {
+		fmt.Sscanf(parts[2], "%d", &patch)
+	}
+	return major, minor, patch
+}
+
+func isNewer(latest, current string) bool {
+	lMaj, lMin, lPatch := parseSemver(latest)
+	cMaj, cMin, cPatch := parseSemver(current)
+	if lMaj != cMaj {
+		return lMaj > cMaj
+	}
+	if lMin != cMin {
+		return lMin > cMin
+	}
+	return lPatch > cPatch
+}
+
 func runUpdate() error {
 	fmt.Printf("Checking for updates (current version: v%s)...\n", appVersion)
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	apiClient := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", "https://api.github.com/repos/nyumuharon/dependency-tracker/releases/latest", nil)
 	if err != nil {
 		return fmt.Errorf("failed to create update request: %w", err)
 	}
 	req.Header.Set("User-Agent", "dep-tracker-updater")
 
-	resp, err := client.Do(req)
+	resp, err := apiClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("unable to reach GitHub release API: %w", err)
 	}
@@ -44,10 +72,8 @@ func runUpdate() error {
 	}
 
 	latestTag := strings.TrimSpace(rel.TagName)
-	cleanLatest := strings.TrimPrefix(latestTag, "v")
-	cleanCurrent := strings.TrimPrefix(appVersion, "v")
 
-	if cleanLatest == cleanCurrent || latestTag == "" {
+	if !isNewer(latestTag, appVersion) {
 		fmt.Printf("✓ dep-tracker is already up to date (v%s).\n", appVersion)
 		return nil
 	}
@@ -73,7 +99,8 @@ func runUpdate() error {
 	downloadURL := fmt.Sprintf("https://github.com/nyumuharon/dependency-tracker/releases/download/%s/%s", latestTag, binaryName)
 	fmt.Printf("Downloading %s from %s...\n", binaryName, latestTag)
 
-	binResp, err := client.Get(downloadURL)
+	downloadClient := &http.Client{Timeout: 10 * time.Minute}
+	binResp, err := downloadClient.Get(downloadURL)
 	if err != nil {
 		return fmt.Errorf("failed to download update: %w", err)
 	}
