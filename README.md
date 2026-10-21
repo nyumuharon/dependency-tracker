@@ -135,12 +135,13 @@ chmod +x dep-tracker
 sudo mv dep-tracker /usr/local/bin/
 ```
 
-**Windows (PowerShell / Command Prompt):**
+**Windows (PowerShell):**
 ```powershell
-curl.exe -L -o dep-tracker.exe https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.exe
-.\dep-tracker.exe --help
+# Installs directly to WindowsApps (already in PATH by default, no admin required)
+curl.exe -L -o "$env:LOCALAPPDATA\Microsoft\WindowsApps\dep-tracker.exe" https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.exe
+dep-tracker --help
 ```
-*(Or download the `.zip` archive from [Releases](https://github.com/nyumuharon/dependency-tracker/releases/latest) and extract `dep-tracker-windows-amd64.exe`)*
+*(Or download and extract the `.zip` archive from [Releases](https://github.com/nyumuharon/dependency-tracker/releases/latest))*
 
 ---
 
