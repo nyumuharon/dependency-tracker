@@ -168,16 +168,6 @@ go build -ldflags="-s -w" -o dep-tracker.exe ./cmd/dep-tracker
 
 ---
 
-### Method 4: Local Cross-Compilation
-
-Releases are built automatically on GitHub Actions, but you can also cross-compile all platform binaries locally into `dist/` with SHA-256 checksums:
-```bash
-chmod +x scripts/build-release.sh
-./scripts/build-release.sh
-```
-
----
-
 
 ## Usage
 
