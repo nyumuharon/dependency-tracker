@@ -30,7 +30,9 @@ cp "$OUT/dep-tracker-macos-arm64" "$OUT/dep-tracker-darwin-arm64"
 # Create compressed archives for much faster download speeds
 if command -v zip >/dev/null 2>&1; then
   echo "Compressing Windows archive (zip)..."
-  (cd "$OUT" && zip -9 -q "dep-tracker-windows-amd64.zip" "dep-tracker-windows-amd64.exe")
+  cp "$OUT/dep-tracker-windows-amd64.exe" "$OUT/dep-tracker.exe"
+  (cd "$OUT" && zip -9 -q "dep-tracker-windows-amd64.zip" "dep-tracker.exe")
+  rm -f "$OUT/dep-tracker.exe"
 fi
 
 if command -v tar >/dev/null 2>&1; then

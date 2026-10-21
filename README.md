@@ -107,45 +107,55 @@ flowchart TD
 
 `dep-tracker` is compiled as a single standalone executable with zero external runtime dependencies. It runs on Linux, macOS, and Windows without requiring Go, Python, or Node.js on the host machine.
 
-### Method 1: Download Pre-compiled Binaries (No Go Required)
+### Method 1: Automated One-Line Install (Recommended)
 
-Download the latest standalone binary for your operating system and CPU architecture from [GitHub Releases](https://github.com/nyumuharon/dependency-tracker/releases/latest):
+Installs the latest standalone binary, configures your `PATH`, and makes `dep-tracker` globally available with no dependencies required:
 
-| Operating System | Architecture | Binary Download Link |
-| :--- | :--- | :--- |
-| **Linux** | x86_64 / amd64 | [`dep-tracker-linux-amd64`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-linux-amd64) |
-| **Linux** | ARM64 / aarch64 | [`dep-tracker-linux-arm64`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-linux-arm64) |
-| **Windows** | x86_64 / amd64 | [`dep-tracker-windows-amd64.exe`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.exe) |
-| **macOS** | Apple Silicon (M1-M4) | [`dep-tracker-darwin-arm64`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-darwin-arm64) |
-| **macOS** | Intel (x86_64) | [`dep-tracker-darwin-amd64`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-darwin-amd64) |
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/nyumuharon/dependency-tracker/main/scripts/install.ps1 | iex
+```
 
-#### Quick Install Commands
+**Linux & macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/nyumuharon/dependency-tracker/main/scripts/install.sh | bash
+```
 
-**Linux (x86_64):**
+Once installed, simply run `dep-tracker --help` from any directory!
+
+---
+
+### Method 2: Manual Standalone Downloads
+
+If you prefer to download standalone binaries manually without an installer, grab the latest release from [GitHub Releases](https://github.com/nyumuharon/dependency-tracker/releases/latest):
+
+| Operating System | Architecture | Binary Download Link | Archive (.zip / .tar.gz) |
+| :--- | :--- | :--- | :--- |
+| **Windows** | x86_64 / amd64 | [`dep-tracker-windows-amd64.exe`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.exe) | [`.zip`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.zip) |
+| **Linux** | x86_64 / amd64 | [`dep-tracker-linux-amd64`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-linux-amd64) | [`.tar.gz`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-linux-amd64.tar.gz) |
+| **Linux** | ARM64 / aarch64 | [`dep-tracker-linux-arm64`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-linux-arm64) | [`.tar.gz`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-linux-arm64.tar.gz) |
+| **macOS** | Apple Silicon (M1-M4) | [`dep-tracker-darwin-arm64`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-darwin-arm64) | [`.tar.gz`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-darwin-arm64.tar.gz) |
+| **macOS** | Intel (x86_64) | [`dep-tracker-darwin-amd64`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-darwin-amd64) | [`.tar.gz`](https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-darwin-amd64.tar.gz) |
+
+#### Quick Manual Commands
+
+**Windows (Download & Run locally in current folder):**
+```powershell
+curl.exe -L -o dep-tracker.exe https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.exe
+.\dep-tracker.exe --help
+```
+
+**Linux / macOS:**
 ```bash
 curl -sSL -o dep-tracker https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-linux-amd64
 chmod +x dep-tracker
 sudo mv dep-tracker /usr/local/bin/
 ```
 
-**macOS (Apple Silicon M1-M4):**
-```bash
-curl -sSL -o dep-tracker https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-darwin-arm64
-chmod +x dep-tracker
-sudo mv dep-tracker /usr/local/bin/
-```
-
-**Windows (PowerShell):**
-```powershell
-# Installs directly to WindowsApps (already in PATH by default, no admin required)
-curl.exe -L -o "$env:LOCALAPPDATA\Microsoft\WindowsApps\dep-tracker.exe" https://github.com/nyumuharon/dependency-tracker/releases/latest/download/dep-tracker-windows-amd64.exe
-dep-tracker --help
-```
-*(Or download and extract the `.zip` archive from [Releases](https://github.com/nyumuharon/dependency-tracker/releases/latest))*
-
 ---
 
-### Method 2: Install via Go (`go install`)
+
+### Method 3: Install via Go (`go install`)
 
 If you have Go 1.22+ installed, install globally in one command:
 ```bash
@@ -155,7 +165,7 @@ go install github.com/nyumuharon/dependency-tracker/cmd/dep-tracker@latest
 
 ---
 
-### Method 3: Build from Source
+### Method 4: Build from Source
 
 ```bash
 git clone https://github.com/nyumuharon/dependency-tracker.git
