@@ -6,6 +6,7 @@ $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('dep-tracker-test-' + [
 $originalProcessPath = $env:Path
 $originalUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $originalInstallDir = $env:DEP_TRACKER_INSTALL_DIR
+$originalTestMode = $env:DEP_TRACKER_TEST_MODE
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $fixture = Join-Path $testRoot 'fixture.exe'
 [IO.File]::WriteAllText($fixture, 'verified binary')
@@ -13,18 +14,18 @@ $fixtureHash = (Get-FileHash -Path $fixture -Algorithm SHA256).Hash
 
 function Invoke-RestMethod {
     param($Uri, $Headers)
-    if ($script:mockMode -eq 'api-failed') { throw 'Simulated API failure' }
+    if ($env:DEP_TRACKER_TEST_MODE -eq 'api-failed') { throw 'Simulated API failure' }
     return [pscustomobject]@{ tag_name = 'v1.0.6' }
 }
 
 function Invoke-WebRequest {
     param($Uri, $OutFile, [switch]$UseBasicParsing)
     if ($Uri -like '*/SHA256SUMS.txt') {
-        if ($script:mockMode -eq 'missing-checksum') { return [pscustomobject]@{ Content = '' } }
+        if ($env:DEP_TRACKER_TEST_MODE -eq 'missing-checksum') { return [pscustomobject]@{ Content = '' } }
         return [pscustomobject]@{ Content = "$fixtureHash  dep-tracker-windows-amd64.exe`n" }
     }
-    if ($script:mockMode -eq 'download-failed') { throw 'Simulated download failure' }
-    if ($script:mockMode -eq 'tampered') {
+    if ($env:DEP_TRACKER_TEST_MODE -eq 'download-failed') { throw 'Simulated download failure' }
+    if ($env:DEP_TRACKER_TEST_MODE -eq 'tampered') {
         [IO.File]::WriteAllText($OutFile, 'tampered binary')
     } else {
         Copy-Item -Path $fixture -Destination $OutFile
@@ -33,7 +34,7 @@ function Invoke-WebRequest {
 
 try {
     foreach ($mode in @('valid', 'tampered', 'missing-checksum', 'download-failed', 'api-failed')) {
-        $script:mockMode = $mode
+        $env:DEP_TRACKER_TEST_MODE = $mode
         $env:DEP_TRACKER_INSTALL_DIR = Join-Path $testRoot $mode
         New-Item -ItemType Directory -Path $env:DEP_TRACKER_INSTALL_DIR | Out-Null
         $installed = Join-Path $env:DEP_TRACKER_INSTALL_DIR 'dep-tracker.exe'
@@ -60,5 +61,6 @@ try {
     $env:Path = $originalProcessPath
     [Environment]::SetEnvironmentVariable('Path', $originalUserPath, 'User')
     $env:DEP_TRACKER_INSTALL_DIR = $originalInstallDir
+    $env:DEP_TRACKER_TEST_MODE = $originalTestMode
     Remove-Item -Recurse -Force $testRoot
 }
