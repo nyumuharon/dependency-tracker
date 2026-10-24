@@ -35,7 +35,13 @@ $tempFile = Join-Path $env:TEMP "dep-tracker-download-$((Get-Random)).exe"
 try {
     Invoke-WebRequest -Uri $downloadUrl -OutFile $tempFile -UseBasicParsing
     $checksumUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS.txt"
-    $manifest = (Invoke-WebRequest -Uri $checksumUrl -UseBasicParsing).Content
+    $checksumResponse = Invoke-WebRequest -Uri $checksumUrl -UseBasicParsing
+    $manifest = if ($checksumResponse.Content -is [byte[]]) {
+        [System.Text.Encoding]::UTF8.GetString($checksumResponse.Content)
+    } else {
+        [string]$checksumResponse.Content
+    }
+    $manifest = $manifest.TrimStart([char]0xFEFF)
     $entries = @($manifest -split "`n" | Where-Object { $_ -match '^[0-9a-fA-F]{64}\s+\*?dep-tracker-windows-amd64\.exe\s*$' })
     if ($entries.Count -ne 1) { throw "Missing or ambiguous release checksum." }
     $expected = ($entries[0] -split '\s+')[0]

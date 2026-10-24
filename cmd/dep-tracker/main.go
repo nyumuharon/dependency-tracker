@@ -33,7 +33,7 @@ const (
 	maxStalenessConcurrency = 24
 )
 
-const appVersion = "1.0.6"
+const appVersion = "1.0.7"
 
 // cliOptions holds the command-line flags accepted by dep-tracker.
 type cliOptions struct {

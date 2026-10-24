@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.7
+
+- Decode binary HTTP checksum responses in the Windows PowerShell installer before validating checksums.
+- Cover text and byte checksum responses, duplicate checksums, CLI argument errors, scoring boundaries, CVSS vectors, and EPSS batching with regression tests.
+- Go statement coverage is now 53.0%.
+
 ## 1.0.6
 
 - Resolve dependency discovery independently for sibling projects and include nested installed npm dependencies.

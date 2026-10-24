@@ -15,14 +15,19 @@ $fixtureHash = (Get-FileHash -Path $fixture -Algorithm SHA256).Hash
 function Invoke-RestMethod {
     param($Uri, $Headers)
     if ($env:DEP_TRACKER_TEST_MODE -eq 'api-failed') { throw 'Simulated API failure' }
-    return [pscustomobject]@{ tag_name = 'v1.0.6' }
+    return [pscustomobject]@{ tag_name = 'v1.0.7' }
 }
 
 function Invoke-WebRequest {
     param($Uri, $OutFile, [switch]$UseBasicParsing)
     if ($Uri -like '*/SHA256SUMS.txt') {
         if ($env:DEP_TRACKER_TEST_MODE -eq 'missing-checksum') { return [pscustomobject]@{ Content = '' } }
-        return [pscustomobject]@{ Content = "$fixtureHash  dep-tracker-windows-amd64.exe`n" }
+        $text = "$fixtureHash  dep-tracker-windows-amd64.exe`n"
+        if ($env:DEP_TRACKER_TEST_MODE -eq 'valid-bytes') {
+            return [pscustomobject]@{ Content = [System.Text.Encoding]::UTF8.GetBytes($text) }
+        }
+        if ($env:DEP_TRACKER_TEST_MODE -eq 'duplicate-checksum') { $text += $text }
+        return [pscustomobject]@{ Content = $text }
     }
     if ($env:DEP_TRACKER_TEST_MODE -eq 'download-failed') { throw 'Simulated download failure' }
     if ($env:DEP_TRACKER_TEST_MODE -eq 'tampered') {
@@ -33,7 +38,7 @@ function Invoke-WebRequest {
 }
 
 try {
-    foreach ($mode in @('valid', 'tampered', 'missing-checksum', 'download-failed', 'api-failed')) {
+    foreach ($mode in @('valid', 'valid-bytes', 'tampered', 'missing-checksum', 'duplicate-checksum', 'download-failed', 'api-failed')) {
         $env:DEP_TRACKER_TEST_MODE = $mode
         $env:DEP_TRACKER_INSTALL_DIR = Join-Path $testRoot $mode
         New-Item -ItemType Directory -Path $env:DEP_TRACKER_INSTALL_DIR | Out-Null
@@ -44,10 +49,10 @@ try {
             & $installerPath
             $succeeded = $true
         } catch {
-            if ($mode -eq 'valid') { throw }
+            if ($mode -in @('valid', 'valid-bytes')) { throw }
         }
-        if ($succeeded -ne ($mode -eq 'valid')) { throw "Unexpected outcome: $mode" }
-        if ($mode -eq 'valid') {
+        if ($succeeded -ne ($mode -in @('valid', 'valid-bytes'))) { throw "Unexpected outcome: $mode" }
+        if ($mode -in @('valid', 'valid-bytes')) {
             if ((Get-FileHash $installed -Algorithm SHA256).Hash -ne $fixtureHash) { throw 'Installed binary differs from the verified download' }
             if (($env:Path -split ';') -notcontains $env:DEP_TRACKER_INSTALL_DIR) { throw 'Process PATH was not updated' }
             $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
