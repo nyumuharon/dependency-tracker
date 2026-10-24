@@ -15,8 +15,18 @@ type SARIFReport struct {
 }
 
 type SARIFRun struct {
-	Tool    SARIFTool     `json:"tool"`
-	Results []SARIFResult `json:"results"`
+	Tool        SARIFTool         `json:"tool"`
+	Results     []SARIFResult     `json:"results"`
+	Invocations []SARIFInvocation `json:"invocations"`
+}
+
+type SARIFInvocation struct {
+	ExecutionSuccessful        bool                `json:"executionSuccessful"`
+	ToolExecutionNotifications []SARIFNotification `json:"toolExecutionNotifications,omitempty"`
+}
+type SARIFNotification struct {
+	Level   string       `json:"level"`
+	Message SARIFMessage `json:"message"`
 }
 
 type SARIFTool struct {
@@ -89,8 +99,8 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 				Tool: SARIFTool{
 					Driver: SARIFDriver{
 						Name:           "dependency-risk-tracker",
-						Version:        "1.0.0",
-						InformationURI: "https://github.com/v3ct0r7/dependency_risk_tracker",
+						Version:        appVersion,
+						InformationURI: "https://github.com/nyumuharon/dependency-tracker",
 						Rules:          []SARIFRule{},
 					},
 				},
@@ -99,9 +109,16 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 		},
 	}
 
+	invocation := SARIFInvocation{ExecutionSuccessful: true}
 	ruleIndexMap := make(map[string]int)
 
 	for _, r := range results {
+		if r.ScanStatus == "incomplete" {
+			invocation.ExecutionSuccessful = false
+			for _, msg := range r.CheckErrors {
+				invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications, SARIFNotification{Level: "error", Message: SARIFMessage{Text: r.Pkg.Name + ": " + msg}})
+			}
+		}
 		// Determine manifest file URI
 		manifestURI := r.Pkg.ManifestPath
 		if manifestURI == "" {
@@ -146,7 +163,7 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 				helpText := fmt.Sprintf("Package: %s (%s)\nInstalled Version: %s\nCVSS: %.1f | EPSS: %.5f\n",
 					r.Pkg.Name, r.Pkg.Ecosystem, r.Pkg.Version, v.CVSS, v.EPSS)
 				if v.FixedVersion != "" {
-					helpText += fmt.Sprintf("Remediation: Upgrade to >= %s\n", v.FixedVersion)
+					helpText += fmt.Sprintf("Fixed release: %s (verify branch compatibility)\n", v.FixedVersion)
 				}
 				if v.IsKEV {
 					helpText += "Warning: Listed in CISA Known Exploited Vulnerabilities (KEV) catalog!\n"
@@ -161,7 +178,7 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 					r.Pkg.Name, r.Pkg.Ecosystem, r.Pkg.Version, ruleID, v.CVSS, v.EPSS)
 
 				if v.FixedVersion != "" {
-					helpMarkdown += fmt.Sprintf("- **Remediation**: Upgrade to `>= %s`\n", v.FixedVersion)
+					helpMarkdown += fmt.Sprintf("- **Remediation**: Fixed release `%s` (verify branch compatibility)\n", v.FixedVersion)
 				}
 				if v.IsKEV {
 					helpMarkdown += "\n**CISA KEV ALERT**: This vulnerability is actively exploited in the wild.\n"
@@ -207,7 +224,7 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 			messageText := fmt.Sprintf("Dependency %s@%s contains %s (CVSS %.1f, EPSS %.5f).",
 				r.Pkg.Name, r.Pkg.Version, ruleID, v.CVSS, v.EPSS)
 			if v.FixedVersion != "" {
-				messageText += fmt.Sprintf(" Upgrade to >= %s.", v.FixedVersion)
+				messageText += fmt.Sprintf(" Fixed release: %s (verify branch compatibility).", v.FixedVersion)
 			}
 			if v.IsKEV {
 				messageText += " WARNING: Actively exploited in the wild according to CISA KEV!"
@@ -239,10 +256,14 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 		}
 	}
 
+	report.Runs[0].Invocations = []SARIFInvocation{invocation}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("sarif marshal: %w", err)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return err
+	}
 	return os.WriteFile(outputPath, data, 0644)
 }

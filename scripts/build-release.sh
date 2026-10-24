@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 OUT="${1:-dist}"
-VERSION="$(grep -oP 'appVersion = "\K[^"]+' cmd/dep-tracker/main.go)"
+VERSION="$(sed -n 's/^const appVersion = "\([^"]*\)"/\1/p' cmd/dep-tracker/main.go)"
 mkdir -p "$OUT"
 
 targets=(
@@ -45,5 +45,9 @@ if command -v tar >/dev/null 2>&1; then
   (cd "$OUT" && cp "dep-tracker-macos-arm64.tar.gz" "dep-tracker-darwin-arm64.tar.gz")
 fi
 
-(cd "$OUT" && sha256sum dep-tracker-* > SHA256SUMS.txt)
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$OUT" && sha256sum dep-tracker-* > SHA256SUMS.txt)
+else
+  (cd "$OUT" && shasum -a 256 dep-tracker-* > SHA256SUMS.txt)
+fi
 echo "Done. Binaries and archives written to $OUT/"

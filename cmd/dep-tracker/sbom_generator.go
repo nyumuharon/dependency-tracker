@@ -3,7 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -26,8 +29,8 @@ type SBOMMetadata struct {
 type SBOMComponent struct {
 	Type       string         `json:"type"`
 	Name       string         `json:"name"`
-	Version    string         `json:"version"`
-	PURL       string         `json:"purl"`
+	Version    string         `json:"version,omitempty"`
+	PURL       string         `json:"purl,omitempty"`
 	Properties []SBOMProperty `json:"properties,omitempty"`
 }
 
@@ -41,6 +44,7 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 		BOMFormat:   "CycloneDX",
 		SpecVersion: "1.4",
 		Version:     1,
+		Components:  []SBOMComponent{},
 		Metadata: SBOMMetadata{
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		},
@@ -48,7 +52,7 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 	sbom.Metadata.Tools = append(sbom.Metadata.Tools, struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
-	}{Name: "dependency-risk-tracker", Version: "1.0.0"})
+	}{Name: "dependency-risk-tracker", Version: appVersion})
 
 	for _, r := range results {
 		comp := SBOMComponent{
@@ -58,12 +62,20 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 			PURL:    buildPURL(r.Pkg),
 		}
 
+		if validateQueryVersion(r.Pkg) != nil {
+			comp.Version = ""
+			comp.Properties = append(comp.Properties, SBOMProperty{Name: "version:declared", Value: r.Pkg.Version})
+		}
+
 		comp.Properties = append(comp.Properties, SBOMProperty{
 			Name:  "risk:priorityTier",
 			Value: r.PriorityTier,
 		})
 
-		staleStatus := "ACTIVE"
+		staleStatus := "UNKNOWN"
+		if !r.Staleness.LastUpdated.IsZero() && r.Staleness.CheckError == "" {
+			staleStatus = "ACTIVE"
+		}
 		if r.Staleness.IsStale {
 			staleStatus = "STALE"
 		}
@@ -79,6 +91,11 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 			})
 		}
 
+		comp.Properties = append(comp.Properties, SBOMProperty{Name: "scan:status", Value: r.ScanStatus}, SBOMProperty{Name: "version:source", Value: r.Pkg.VersionSource})
+		for _, msg := range r.CheckErrors {
+			comp.Properties = append(comp.Properties, SBOMProperty{Name: "scan:error", Value: msg})
+		}
+
 		for _, v := range r.Vulnerabilities {
 			comp.Properties = append(comp.Properties, SBOMProperty{
 				Name:  "vuln:cveID",
@@ -87,7 +104,7 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 			if v.FixedVersion != "" {
 				comp.Properties = append(comp.Properties, SBOMProperty{
 					Name:  "vuln:fixedVersion",
-					Value: fmt.Sprintf("%s: >= %s", v.CVEID, v.FixedVersion),
+					Value: fmt.Sprintf("%s: fixed release %s (verify branch compatibility)", v.CVEID, v.FixedVersion),
 				})
 			}
 			if v.IsKEV {
@@ -106,36 +123,53 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 		return fmt.Errorf("sbom marshal: %w", err)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return err
+	}
 	return os.WriteFile(outputPath, data, 0644)
 }
 
 func buildPURL(pkg Package) string {
+	if validateQueryVersion(pkg) != nil {
+		return ""
+	}
+	name, version := pkg.Name, url.PathEscape(pkg.Version)
+	// Escape each namespace/name segment while retaining its separators.
+	segments := strings.Split(name, "/")
+	for i := range segments {
+		segments[i] = url.PathEscape(segments[i])
+		segments[i] = strings.ReplaceAll(segments[i], "@", "%40")
+	}
+	name = strings.Join(segments, "/")
+	if pkg.Ecosystem == "Maven" {
+		name = strings.Replace(name, ":", "/", 1)
+	}
 	switch pkg.Ecosystem {
 	case "npm":
-		return fmt.Sprintf("pkg:npm/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:npm/%s@%s", name, version)
 	case "PyPI":
-		return fmt.Sprintf("pkg:pypi/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:pypi/%s@%s", name, version)
 	case "Maven":
-		return fmt.Sprintf("pkg:maven/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:maven/%s@%s", name, version)
 	case "NuGet":
-		return fmt.Sprintf("pkg:nuget/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:nuget/%s@%s", name, version)
 	case "Go":
-		return fmt.Sprintf("pkg:golang/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:golang/%s@%s", name, version)
 	case "crates.io":
-		return fmt.Sprintf("pkg:cargo/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:cargo/%s@%s", name, version)
 	case "Packagist":
-		return fmt.Sprintf("pkg:composer/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:composer/%s@%s", name, version)
 	case "RubyGems":
-		return fmt.Sprintf("pkg:gem/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:gem/%s@%s", name, version)
 	case "ConanCenter":
-		return fmt.Sprintf("pkg:conan/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:conan/%s@%s", name, version)
 	case "Pub":
-		return fmt.Sprintf("pkg:pub/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:pub/%s@%s", name, version)
 	case "Hex":
-		return fmt.Sprintf("pkg:hex/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:hex/%s@%s", name, version)
 	case "SwiftURL":
-		return fmt.Sprintf("pkg:swift/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:swift/%s@%s", name, version)
 	default:
-		return fmt.Sprintf("pkg:generic/%s@%s", pkg.Name, pkg.Version)
+		return fmt.Sprintf("pkg:generic/%s@%s", name, version)
 	}
 }

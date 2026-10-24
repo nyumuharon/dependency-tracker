@@ -135,10 +135,10 @@ func filterDirManifests(paths []string) []string {
 		selected = append(selected, pyManifests...)
 	}
 
-	if len(goLocks) > 0 {
-		selected = append(selected, goLocks...)
-	} else {
+	if len(goManifests) > 0 {
 		selected = append(selected, goManifests...)
+	} else {
+		selected = append(selected, goLocks...)
 	}
 
 	if len(rustLocks) > 0 {
@@ -243,6 +243,35 @@ func ParsePath(targetPath string) ([]Package, error) {
 }
 
 func ParseManifest(filePath string) ([]Package, error) {
+	pkgs, err := parseManifestRaw(filePath)
+	if err != nil {
+		return nil, err
+	}
+	for i := range pkgs {
+		p := &pkgs[i]
+		if p.ManifestPath == "" {
+			p.ManifestPath = filePath
+		}
+		p.ProjectPath = filepath.Dir(filePath)
+		p.VersionSource = "manifest"
+		base := strings.ToLower(filepath.Base(filePath))
+		if strings.HasSuffix(base, ".lock") || strings.HasSuffix(base, "-lock.json") || base == "pnpm-lock.yaml" || base == "packages.lock.json" || base == "package.resolved" || base == "go.sum" {
+			p.VersionSource = "lockfile"
+		}
+		if base == "project.assets.json" || base == "installed.json" || base == "package_config.json" {
+			p.VersionSource = "installed"
+		}
+		nugetRange := p.Ecosystem == "NuGet" && p.VersionSource == "manifest" && base != "packages.config" && !(strings.HasPrefix(p.Version, "[") && strings.HasSuffix(p.Version, "]") && !strings.Contains(p.Version, ","))
+		cargoRange := base == "cargo.toml" && !strings.HasPrefix(p.Version, "=")
+		p.Version = normalizeExactPin(p.Version, p.Ecosystem)
+		if (!exactVersionRE.MatchString(p.Version) || wildcardVersionRE.MatchString(p.Version)) || cargoRange || nugetRange || base == "cmakelists.txt" {
+			p.VersionSource = "constraint"
+		}
+	}
+	return pkgs, nil
+}
+
+func parseManifestRaw(filePath string) ([]Package, error) {
 	switch {
 	// JavaScript / TypeScript lockfiles & manifests
 	case strings.HasSuffix(filePath, "package-lock.json"):
@@ -344,7 +373,7 @@ func parseNPM(filePath string) ([]Package, error) {
 }
 
 func cleanNPMVersion(v string) string {
-	return strings.TrimLeft(v, "^~>=<")
+	return strings.TrimSpace(v)
 }
 
 // ── PyPI (requirements.txt) ───────────────────────────────────────────────────
@@ -367,7 +396,7 @@ func parsePyPI(filePath string) ([]Package, error) {
 			line = strings.TrimSpace(line[:idx])
 		}
 		name, ver := parsePEP508Spec(line)
-		if name != "" && ver != "" && ver != "latest" {
+		if name != "" && ver != "" {
 			pkgs = append(pkgs, Package{
 				Name:      name,
 				Version:   ver,
@@ -910,10 +939,10 @@ func parsePEP508Spec(spec string) (string, string) {
 	var rawName, rawVer string
 	if minIdx != -1 {
 		rawName = spec[:minIdx]
-		rawVer = spec[minIdx+len(matchedOp):]
-		// If multiple constraints exist (e.g., ">=2.8,<3"), take the first constraint
-		rawVer = strings.Split(rawVer, ",")[0]
-		rawVer = strings.TrimLeft(strings.TrimSpace(rawVer), "^~>=<! ")
+		rawVer = spec[minIdx:]
+		if matchedOp == "==" && !strings.ContainsAny(rawVer[2:], ",* ") {
+			rawVer = rawVer[2:]
+		}
 	} else {
 		rawName = spec
 		rawVer = "latest"
@@ -1074,7 +1103,6 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 			} else {
 				version = strings.Trim(val, `"' `)
 			}
-			version = strings.Split(version, ",")[0]
 			version = cleanNPMVersion(version)
 			addPkg(name, version)
 		}
@@ -1529,7 +1557,7 @@ func parseVcpkg(filePath string) ([]Package, error) {
 				case depObj.Version != "":
 					version = depObj.Version
 				case depObj.VersionGE != "":
-					version = depObj.VersionGE
+					version = ">=" + depObj.VersionGE
 				case depObj.VersionString != "":
 					version = depObj.VersionString
 				case depObj.VersionDate != "":
@@ -1625,7 +1653,7 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 
 	err := filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			name := d.Name()
@@ -1693,14 +1721,15 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 
 	var discoveredSources []string
 	var manifestPkgs []Package
-	hasPyLock := false
-	hasNPMLock := false
-	hasGoLock := false
-	hasPHPLock := false
-	hasRubyLock := false
-	hasNuGetLock := false
-	hasConanLock := false
-	hasDartLock := false
+	lockDirs := make(map[string]map[string]bool)
+	hasLock := func(dir, eco string) bool { return lockDirs[filepath.Clean(dir)][eco] }
+	appendEnv := func(pkgs []Package, projectDir string) []Package {
+		for i := range pkgs {
+			pkgs[i].ProjectPath = filepath.Clean(projectDir)
+			pkgs[i].VersionSource = "installed"
+		}
+		return pkgs
+	}
 
 	var dirs []string
 	for dir := range dirFiles {
@@ -1713,6 +1742,9 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 		for _, file := range selected {
 			pkgs, parseErr := ParseManifest(file)
 			if parseErr != nil {
+				if isNamedDependencyFile(filepath.Base(file)) {
+					return nil, nil, fmt.Errorf("parse %s: %w", file, parseErr)
+				}
 				continue
 			}
 			if len(pkgs) == 0 && !IsManifestFile(file) {
@@ -1720,23 +1752,26 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 			}
 			discoveredSources = append(discoveredSources, file)
 			base := strings.ToLower(filepath.Base(file))
+			if lockDirs[dir] == nil {
+				lockDirs[dir] = make(map[string]bool)
+			}
 			switch {
 			case strings.HasSuffix(base, "poetry.lock"), strings.HasSuffix(base, "pipfile.lock"), strings.HasSuffix(base, "uv.lock"), strings.HasSuffix(base, "pdm.lock"):
-				hasPyLock = true
+				lockDirs[dir]["PyPI"] = true
 			case strings.HasSuffix(base, "package-lock.json"), strings.HasSuffix(base, "yarn.lock"), strings.HasSuffix(base, "pnpm-lock.yaml"):
-				hasNPMLock = true
-			case strings.HasSuffix(base, "go.sum"):
-				hasGoLock = true
+				lockDirs[dir]["npm"] = true
+			case strings.HasSuffix(base, "go.mod"):
+				lockDirs[dir]["Go"] = true
 			case strings.HasSuffix(base, "composer.lock"):
-				hasPHPLock = true
+				lockDirs[dir]["Packagist"] = true
 			case strings.HasSuffix(base, "gemfile.lock"):
-				hasRubyLock = true
+				lockDirs[dir]["RubyGems"] = true
 			case strings.HasSuffix(base, "packages.lock.json"):
-				hasNuGetLock = true
+				lockDirs[dir]["NuGet"] = true
 			case strings.HasSuffix(base, "conan.lock"):
-				hasConanLock = true
+				lockDirs[dir]["ConanCenter"] = true
 			case strings.HasSuffix(base, "pubspec.lock"):
-				hasDartLock = true
+				lockDirs[dir]["Pub"] = true
 			}
 			for i := range pkgs {
 				if pkgs[i].ManifestPath == "" {
@@ -1748,86 +1783,128 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 	}
 
 	var envPkgs []Package
-	if !hasPyLock && len(venvDirs) > 0 {
+	if len(venvDirs) > 0 {
 		for _, vDir := range venvDirs {
+			if hasLock(filepath.Dir(vDir), "PyPI") {
+				continue
+			}
 			vPkgs := inspectPythonVenv(vDir, localModuleNames)
 			if len(vPkgs) > 0 {
 				discoveredSources = append(discoveredSources, filepath.Join(vDir, "pyvenv.cfg"))
-				envPkgs = append(envPkgs, vPkgs...)
+				envPkgs = append(envPkgs, appendEnv(vPkgs, filepath.Dir(vDir))...)
 			}
 		}
 	}
 
-	if !hasNPMLock && len(nodeModulesDirs) > 0 {
+	if len(nodeModulesDirs) > 0 {
 		for _, nmDir := range nodeModulesDirs {
+			if hasLock(filepath.Dir(nmDir), "npm") {
+				continue
+			}
 			nmPkgs := inspectNodeModules(nmDir)
 			if len(nmPkgs) > 0 {
 				discoveredSources = append(discoveredSources, nmDir)
-				envPkgs = append(envPkgs, nmPkgs...)
+				envPkgs = append(envPkgs, appendEnv(nmPkgs, filepath.Dir(nmDir))...)
 			}
 		}
 	}
 
 	for _, vDir := range vendorDirs {
 		// Go vendor/modules.txt
-		if !hasGoLock {
+		if !hasLock(filepath.Dir(vDir), "Go") {
 			modTxt := filepath.Join(vDir, "modules.txt")
 			if gPkgs := inspectGoVendorModules(modTxt); len(gPkgs) > 0 {
 				discoveredSources = append(discoveredSources, modTxt)
-				envPkgs = append(envPkgs, gPkgs...)
+				envPkgs = append(envPkgs, appendEnv(gPkgs, filepath.Dir(vDir))...)
 			}
 		}
 		// PHP vendor/composer/installed.json
-		if !hasPHPLock {
+		if !hasLock(filepath.Dir(vDir), "Packagist") {
 			compInst := filepath.Join(vDir, "composer", "installed.json")
 			if pPkgs := inspectComposerInstalled(compInst); len(pPkgs) > 0 {
 				discoveredSources = append(discoveredSources, compInst)
-				envPkgs = append(envPkgs, pPkgs...)
+				envPkgs = append(envPkgs, appendEnv(pPkgs, filepath.Dir(vDir))...)
 			}
 		}
 		// Ruby vendor/bundle/**/specifications/*.gemspec
-		if !hasRubyLock {
+		if !hasLock(filepath.Dir(vDir), "RubyGems") {
 			if rPkgs := inspectRubyVendorBundle(vDir); len(rPkgs) > 0 {
 				discoveredSources = append(discoveredSources, vDir)
-				envPkgs = append(envPkgs, rPkgs...)
+				envPkgs = append(envPkgs, appendEnv(rPkgs, filepath.Dir(vDir))...)
 			}
 		}
 	}
 
-	if !hasNuGetLock && len(dotNetAssetFiles) > 0 {
+	if len(dotNetAssetFiles) > 0 {
 		for _, af := range dotNetAssetFiles {
+			if hasLock(filepath.Dir(filepath.Dir(af)), "NuGet") {
+				continue
+			}
 			if nPkgs := inspectDotNetAssets(af); len(nPkgs) > 0 {
 				discoveredSources = append(discoveredSources, af)
-				envPkgs = append(envPkgs, nPkgs...)
+				envPkgs = append(envPkgs, appendEnv(nPkgs, filepath.Dir(filepath.Dir(af)))...)
 			}
 		}
 	}
 
-	if !hasConanLock && len(vcpkgStatusFiles) > 0 {
+	if len(vcpkgStatusFiles) > 0 {
 		for _, sf := range vcpkgStatusFiles {
+			if hasLock(filepath.Dir(filepath.Dir(filepath.Dir(sf))), "ConanCenter") {
+				continue
+			}
 			if cPkgs := inspectVcpkgStatus(sf); len(cPkgs) > 0 {
 				discoveredSources = append(discoveredSources, sf)
-				envPkgs = append(envPkgs, cPkgs...)
+				envPkgs = append(envPkgs, appendEnv(cPkgs, filepath.Dir(filepath.Dir(filepath.Dir(sf))))...)
 			}
 		}
 	}
 
-	if !hasDartLock && len(dartPackageConfigs) > 0 {
+	if len(dartPackageConfigs) > 0 {
 		for _, dcf := range dartPackageConfigs {
+			if hasLock(filepath.Dir(filepath.Dir(dcf)), "Pub") {
+				continue
+			}
 			if dPkgs := inspectDartPackageConfig(dcf); len(dPkgs) > 0 {
 				discoveredSources = append(discoveredSources, dcf)
-				envPkgs = append(envPkgs, dPkgs...)
+				envPkgs = append(envPkgs, appendEnv(dPkgs, filepath.Dir(filepath.Dir(dcf)))...)
 			}
 		}
 	}
 
 	finalPkgs := mergeManifestAndEnvPackages(manifestPkgs, envPkgs)
 
-	if len(finalPkgs) == 0 && len(discoveredSources) == 0 {
-		srcPkgs, srcFiles := scanSourceCodeImports(rootDir, localModuleNames)
-		if len(srcPkgs) > 0 {
-			discoveredSources = append(discoveredSources, srcFiles...)
-			finalPkgs = srcPkgs
+	coveredDirs := make(map[string]bool)
+	for _, pkg := range finalPkgs {
+		coveredDirs[filepath.Clean(pkg.ProjectPath)] = true
+	}
+	for _, source := range discoveredSources {
+		dir := filepath.Dir(source)
+		if filepath.Base(source) == "node_modules" || filepath.Base(source) == "vendor" {
+			dir = filepath.Dir(source)
+		}
+		coveredDirs[filepath.Clean(dir)] = true
+	}
+	covered := func(path string) bool {
+		for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+			if coveredDirs[dir] {
+				return true
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir || dir == filepath.Clean(rootDir) {
+				return false
+			}
+		}
+	}
+	srcPkgs, _ := scanSourceCodeImports(rootDir, localModuleNames)
+	seenSource := make(map[string]bool)
+	for _, p := range srcPkgs {
+		if covered(p.ManifestPath) {
+			continue
+		}
+		finalPkgs = append(finalPkgs, p)
+		if !seenSource[p.ManifestPath] {
+			discoveredSources = append(discoveredSources, p.ManifestPath)
+			seenSource[p.ManifestPath] = true
 		}
 	}
 
@@ -1859,7 +1936,7 @@ func mergeManifestAndEnvPackages(manifestPkgs, envPkgs []Package) []Package {
 	}
 
 	for _, mp := range manifestPkgs {
-		nk := normKey(mp.Name, mp.Ecosystem)
+		nk := normKey(mp.Name, mp.Ecosystem) + "@" + mp.ProjectPath
 		if manifestPathByPkg[nk] == "" {
 			manifestPathByPkg[nk] = mp.ManifestPath
 		}
@@ -1869,7 +1946,7 @@ func mergeManifestAndEnvPackages(manifestPkgs, envPkgs []Package) []Package {
 	seen := make(map[string]bool)
 
 	for _, ep := range envPkgs {
-		nk := normKey(ep.Name, ep.Ecosystem)
+		nk := normKey(ep.Name, ep.Ecosystem) + "@" + ep.ProjectPath
 		envHasPkg[nk] = true
 		if mPath, ok := manifestPathByPkg[nk]; ok && mPath != "" {
 			ep.ManifestPath = mPath
@@ -1882,8 +1959,8 @@ func mergeManifestAndEnvPackages(manifestPkgs, envPkgs []Package) []Package {
 	}
 
 	for _, mp := range manifestPkgs {
-		nk := normKey(mp.Name, mp.Ecosystem)
-		if !envHasPkg[nk] {
+		nk := normKey(mp.Name, mp.Ecosystem) + "@" + mp.ProjectPath
+		if !envHasPkg[nk] || validateQueryVersion(mp) == nil {
 			k := mp.Key()
 			if !seen[k] {
 				seen[k] = true
@@ -2284,11 +2361,15 @@ func inspectNodeModules(nmDir string) []Package {
 			}
 			for _, sub := range subEntries {
 				if sub.IsDir() {
-					readPkgJSON(filepath.Join(scopedDir, sub.Name(), "package.json"))
+					pkgDir := filepath.Join(scopedDir, sub.Name())
+					readPkgJSON(filepath.Join(pkgDir, "package.json"))
+					pkgs = append(pkgs, inspectNodeModules(filepath.Join(pkgDir, "node_modules"))...)
 				}
 			}
 		} else {
-			readPkgJSON(filepath.Join(nmDir, entry.Name(), "package.json"))
+			pkgDir := filepath.Join(nmDir, entry.Name())
+			readPkgJSON(filepath.Join(pkgDir, "package.json"))
+			pkgs = append(pkgs, inspectNodeModules(filepath.Join(pkgDir, "node_modules"))...)
 		}
 	}
 
@@ -2804,7 +2885,7 @@ func parseGemfile(filePath, content string) ([]Package, error) {
 			name := matches[0][1]
 			ver := "latest"
 			if len(matches) >= 2 {
-				ver = strings.TrimLeft(matches[1][1], "~>!=<^ ")
+				ver = strings.TrimSpace(matches[1][1])
 			}
 			if name != "" && ver != "" {
 				p := Package{
@@ -2830,8 +2911,7 @@ func parseElixirMix(filePath, content string) ([]Package, error) {
 	seen := make(map[string]bool)
 	for _, m := range elixirDepRe.FindAllStringSubmatch(content, -1) {
 		name := m[1]
-		ver := strings.TrimLeft(m[2], "~>!=<^ ")
-		ver = strings.Fields(ver)[0]
+		ver := strings.TrimSpace(m[2])
 		if name != "" && ver != "" {
 			p := Package{
 				Name:         name,
@@ -2901,7 +2981,7 @@ func parsePipfileToml(filePath, content string) []Package {
 		}
 		name := strings.TrimSpace(parts[0])
 		val := strings.Trim(strings.TrimSpace(parts[1]), `"' `)
-		ver := strings.TrimLeft(val, "=~<>^* ")
+		ver := strings.TrimSpace(val)
 		if ver == "" {
 			ver = "latest"
 		}
@@ -3059,7 +3139,7 @@ func parsePubspecYAML(filePath, content string) []Package {
 			if strings.HasPrefix(raw, "  ") && !strings.HasPrefix(raw, "    ") && strings.Contains(trimmed, ":") {
 				parts := strings.SplitN(trimmed, ":", 2)
 				name := strings.TrimSpace(parts[0])
-				ver := strings.TrimLeft(strings.Trim(strings.TrimSpace(parts[1]), `"'`), "^~>=< ")
+				ver := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
 				if name != "flutter" && name != "flutter_test" && name != "" && ver != "" {
 					p := Package{Name: name, Version: ver, Ecosystem: "Pub", ManifestPath: filePath}
 					if !seen[p.Key()] {
@@ -3214,7 +3294,7 @@ func scanSourceCodeImports(rootDir string, localModules map[string]bool) ([]Pack
 		if name == "" {
 			return
 		}
-		p := Package{Name: name, Version: "latest", Ecosystem: ecosystem, ManifestPath: path}
+		p := Package{Name: name, Version: "latest", Ecosystem: ecosystem, ManifestPath: path, ProjectPath: filepath.Dir(path), VersionSource: "import"}
 		if !seenPkg[p.Key()] {
 			seenPkg[p.Key()] = true
 			pkgs = append(pkgs, p)

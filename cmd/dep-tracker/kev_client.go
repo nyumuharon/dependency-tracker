@@ -88,10 +88,13 @@ func FetchKEVCatalog() (map[string]KEVEntry, error) {
 		return loadStaleCacheOrError(cachePath, err)
 	}
 
-	// 3. Save to disk cache
+	catalog, err := parseKEVData(body)
+	if err != nil {
+		return loadStaleCacheOrError(cachePath, err)
+	}
+	// Save validated data only.
 	_ = os.WriteFile(cachePath, body, 0644)
-
-	return parseKEVData(body)
+	return catalog, nil
 }
 
 func parseKEVData(data []byte) (map[string]KEVEntry, error) {
@@ -115,7 +118,7 @@ func loadStaleCacheOrError(cachePath string, originalErr error) (map[string]KEVE
 	if err == nil {
 		catalog, parseErr := parseKEVData(data)
 		if parseErr == nil {
-			return catalog, nil
+			return catalog, fmt.Errorf("using stale KEV cache because refresh failed: %w", originalErr)
 		}
 	}
 	return nil, fmt.Errorf("could not fetch CISA KEV catalog: %w", originalErr)

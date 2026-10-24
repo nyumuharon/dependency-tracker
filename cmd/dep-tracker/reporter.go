@@ -7,6 +7,8 @@ import (
 )
 
 type ScanResult struct {
+	ScanStatus      string
+	CheckErrors     []string `json:",omitempty"`
 	Pkg             Package
 	Vulnerabilities []Vulnerability
 	PriorityTier    string
@@ -23,8 +25,10 @@ func tierRank(tier string) int {
 		return 3
 	case "LOW":
 		return 4
-	default:
+	case "UNKNOWN":
 		return 5
+	default:
+		return 6
 	}
 }
 
@@ -54,6 +58,7 @@ func PrintReport(results []ScanResult) {
 	var vulnResults []ScanResult
 	var staleOnlyClean []ScanResult
 	var cleanCount int
+	var incompleteCount int
 
 	type RemediationRow struct {
 		PkgName string
@@ -64,6 +69,9 @@ func PrintReport(results []ScanResult) {
 	var remediations []RemediationRow
 
 	for _, r := range results {
+		if r.ScanStatus == "incomplete" {
+			incompleteCount++
+		}
 		if r.Staleness.IsStale {
 			staleCount++
 		}
@@ -77,7 +85,7 @@ func PrintReport(results []ScanResult) {
 			mediumCount++
 		case "LOW":
 			lowCount++
-		default:
+		case "NONE":
 			noneCount++
 		}
 
@@ -85,27 +93,30 @@ func PrintReport(results []ScanResult) {
 			vulnResults = append(vulnResults, r)
 			totalVulns += len(r.Vulnerabilities)
 
-			bestFix := ""
+			var fixes []string
+			seenFix := make(map[string]bool)
 			for _, v := range r.Vulnerabilities {
 				if v.IsKEV {
 					kevCount++
 				}
 				if v.FixedVersion != "" {
 					fixCount++
-					if bestFix == "" || v.FixedVersion > bestFix {
-						bestFix = v.FixedVersion
+					if !seenFix[v.FixedVersion] {
+						fixes = append(fixes, v.FixedVersion)
+						seenFix[v.FixedVersion] = true
 					}
 				}
 			}
-			if bestFix != "" {
+			if len(fixes) > 0 {
+				sort.Strings(fixes)
 				remediations = append(remediations, RemediationRow{
 					PkgName: r.Pkg.Name,
 					Tier:    r.PriorityTier,
 					Current: r.Pkg.Version,
-					Fix:     ">= " + bestFix,
+					Fix:     strings.Join(fixes, ", "),
 				})
 			}
-		} else {
+		} else if r.ScanStatus != "incomplete" {
 			cleanCount++
 			if r.Staleness.IsStale {
 				staleOnlyClean = append(staleOnlyClean, r)
@@ -129,9 +140,12 @@ func PrintReport(results []ScanResult) {
 			}
 
 			fmt.Printf("\n%s %s (%s)\n", badge, r.Pkg.Name, r.Pkg.Ecosystem)
-			fmt.Printf("    Current Version : %s\n", r.Pkg.Version)
+			fmt.Printf("    Scanned Version : %s (%s)\n", r.Pkg.Version, r.Pkg.VersionSource)
 			if r.Staleness.LatestVersion != "" {
-				statusStr := "ACTIVE"
+				statusStr := "UNKNOWN"
+				if !r.Staleness.LastUpdated.IsZero() && r.Staleness.CheckError == "" {
+					statusStr = "ACTIVE"
+				}
 				if r.Staleness.IsStale {
 					statusStr = "STALE (No updates in > 2 years)"
 				}
@@ -157,12 +171,16 @@ func PrintReport(results []ScanResult) {
 					fmt.Printf("        Summary : %s\n", v.Summary)
 				}
 				if v.FixedVersion != "" {
-					fmt.Printf("        Fix     : Upgrade to >= %s\n", v.FixedVersion)
+					fmt.Printf("        Fix     : Fixed release: %s; verify branch compatibility\n", v.FixedVersion)
 				}
 			}
 		}
 	} else {
-		fmt.Println("\n✅ No vulnerabilities found across scanned packages!")
+		if incompleteCount > 0 {
+			fmt.Println("\nScan incomplete: absence of findings does not establish a clean scan.")
+		} else {
+			fmt.Println("\n✅ No vulnerabilities found across scanned packages!")
+		}
 	}
 
 	// ── SECTION 2: ACTIONABLE REMEDIATION TABLE ───────────────────────────────
@@ -170,10 +188,22 @@ func PrintReport(results []ScanResult) {
 		fmt.Printf("\n\n%s\n", sep)
 		fmt.Printf("%45s\n", "RECOMMENDED ACTIONS & FIXES")
 		fmt.Println(sep)
-		fmt.Printf("  %-25s %-15s %-12s %-15s\n", "PACKAGE", "SEVERITY", "CURRENT", "UPGRADE TO")
+		fmt.Printf("  %-25s %-15s %-12s %-15s\n", "PACKAGE", "SEVERITY", "CURRENT", "FIXED RELEASES")
 		fmt.Println(thinSep)
 		for _, rem := range remediations {
 			fmt.Printf("  %-25s %-15s %-12s %-15s\n", rem.PkgName, rem.Tier, rem.Current, rem.Fix)
+		}
+	}
+
+	if len(remediations) > 0 {
+		fmt.Println("  Fixed releases apply to individual advisories; review the details above before upgrading.")
+	}
+	for _, r := range results {
+		if r.ScanStatus == "incomplete" {
+			fmt.Printf("\n[INCOMPLETE] %s@%s (%s; source: %s)\n", r.Pkg.Name, r.Pkg.Version, r.Pkg.ManifestPath, r.Pkg.VersionSource)
+			for _, msg := range r.CheckErrors {
+				fmt.Printf("  - %s\n", msg)
+			}
 		}
 	}
 
@@ -215,6 +245,7 @@ func PrintReport(results []ScanResult) {
 	fmt.Printf("%38s\n", "EXECUTIVE SUMMARY")
 	fmt.Println(sep)
 	fmt.Printf("Total Packages Scanned : %d\n", len(results))
+	fmt.Printf("Incomplete Checks      : %d package(s)\n", incompleteCount)
 	if len(ecoList) > 0 {
 		fmt.Printf("Ecosystems Scanned     : %s (%d)\n", strings.Join(ecoList, ", "), len(ecoList))
 	}

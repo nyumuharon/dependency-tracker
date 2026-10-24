@@ -15,6 +15,7 @@ import (
 )
 
 type StalenessResult struct {
+	CheckError    string    `json:"check_error,omitempty"`
 	LatestVersion string    `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
 	IsStale       bool      `json:"is_stale"`
@@ -102,6 +103,9 @@ func CheckStaleness(pkg Package) (StalenessResult, error) {
 		return StalenessResult{}, fmt.Errorf("unsupported ecosystem: %s", pkg.Ecosystem)
 	}
 
+	if err == nil && res.LastUpdated.IsZero() {
+		err = fmt.Errorf("release date unavailable for %s", pkg.Name)
+	}
 	if err == nil && res.LatestVersion != "" {
 		res.CachedAt = time.Now()
 		stalenessCacheMu.Lock()

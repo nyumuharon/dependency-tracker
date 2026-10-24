@@ -79,60 +79,12 @@ func TestParseKEVData(t *testing.T) {
 }
 
 func TestParseVulnsRemediation(t *testing.T) {
-	res := osvResponse{
-		Vulns: []struct {
-			ID       string   `json:"id"`
-			Aliases  []string `json:"aliases"`
-			Summary  string   `json:"summary"`
-			Details  string   `json:"details"`
-			Severity []struct {
-				Type  string `json:"type"`
-				Score string `json:"score"`
-			} `json:"severity"`
-			Affected []struct {
-				Ranges []struct {
-					Type   string `json:"type"`
-					Events []struct {
-						Fixed string `json:"fixed"`
-					} `json:"events"`
-				} `json:"ranges"`
-			} `json:"affected"`
-		}{
-			{
-				ID:      "GHSA-1234",
-				Aliases: []string{"CVE-2024-9999"},
-				Summary: "Sample issue",
-				Affected: []struct {
-					Ranges []struct {
-						Type   string `json:"type"`
-						Events []struct {
-							Fixed string `json:"fixed"`
-						} `json:"events"`
-					} `json:"ranges"`
-				}{
-					{
-						Ranges: []struct {
-							Type   string `json:"type"`
-							Events []struct {
-								Fixed string `json:"fixed"`
-							} `json:"events"`
-						}{
-							{
-								Type: "SEMVER",
-								Events: []struct {
-									Fixed string `json:"fixed"`
-								}{
-									{Fixed: "2.5.0"},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
+	var res osvResponse
+	if err := json.Unmarshal([]byte(`{"vulns":[{"id":"GHSA-1234","aliases":["CVE-2024-9999"],"summary":"Sample issue","affected":[{"package":{"name":"example","ecosystem":"npm"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.5.0"}]}]}]}]}`), &res); err != nil {
+		t.Fatal(err)
 	}
 
-	vulns := parseVulns(res)
+	vulns := parseVulns(res, Package{Name: "example", Ecosystem: "npm", Version: "2.4.0"})
 	if len(vulns) != 1 {
 		t.Fatalf("expected 1 vuln, got %d", len(vulns))
 	}
@@ -331,8 +283,8 @@ func TestParseVcpkg(t *testing.T) {
 	if pkgMap["zlib"] != "1.3.1" {
 		t.Errorf("expected zlib version 1.3.1 (overridden), got %s", pkgMap["zlib"])
 	}
-	if pkgMap["openssl"] != "3.1.0" {
-		t.Errorf("expected openssl version 3.1.0, got %s", pkgMap["openssl"])
+	if pkgMap["openssl"] != ">=3.1.0" {
+		t.Errorf("expected openssl constraint >=3.1.0, got %s", pkgMap["openssl"])
 	}
 	if pkgMap["fmt"] != "latest" {
 		t.Errorf("expected fmt version latest, got %s", pkgMap["fmt"])
@@ -396,13 +348,13 @@ dev = [
 	}
 
 	expected := map[string]string{
-		"pydantic":     "2.8",
-		"lark":         "1.1",
-		"networkx":     "3.2",
-		"google-genai": "1.0",
-		"mypy":         "1.10",
-		"pytest":       "8.2",
-		"ruff":         "0.5",
+		"pydantic":     ">=2.8,<3",
+		"lark":         ">=1.1,<2",
+		"networkx":     ">=3.2,<4",
+		"google-genai": ">=1.0",
+		"mypy":         ">=1.10",
+		"pytest":       ">=8.2",
+		"ruff":         ">=0.5",
 	}
 
 	for _, p := range pkgs {

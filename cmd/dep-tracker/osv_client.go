@@ -50,24 +50,71 @@ type osvQuery struct {
 
 // osvResponse is what OSV sends back
 type osvResponse struct {
-	Vulns []struct {
-		ID       string   `json:"id"`
-		Aliases  []string `json:"aliases"`
-		Summary  string   `json:"summary"`
-		Details  string   `json:"details"`
-		Severity []struct {
-			Type  string `json:"type"`
-			Score string `json:"score"`
-		} `json:"severity"`
-		Affected []struct {
-			Ranges []struct {
-				Type   string `json:"type"`
-				Events []struct {
-					Fixed string `json:"fixed"`
-				} `json:"events"`
-			} `json:"ranges"`
-		} `json:"affected"`
-	} `json:"vulns"`
+	Vulns []osvVulnerability `json:"vulns"`
+}
+type osvVulnerability struct {
+	ID       string   `json:"id"`
+	Aliases  []string `json:"aliases"`
+	Summary  string   `json:"summary"`
+	Details  string   `json:"details"`
+	Severity []struct {
+		Type  string `json:"type"`
+		Score string `json:"score"`
+	} `json:"severity"`
+	Affected []struct {
+		Package struct {
+			Name      string `json:"name"`
+			Ecosystem string `json:"ecosystem"`
+		} `json:"package"`
+		Ranges []struct {
+			Type   string `json:"type"`
+			Events []struct {
+				Introduced   string `json:"introduced"`
+				Fixed        string `json:"fixed"`
+				LastAffected string `json:"last_affected"`
+				Limit        string `json:"limit"`
+			} `json:"events"`
+		} `json:"ranges"`
+	} `json:"affected"`
+}
+
+// fixedRelease selects the closing fixed event of the interval containing the
+// scanned version, only for the package actually being queried. Other branches,
+// packages, commit hashes and unsupported version orderings are never guessed.
+func fixedRelease(v osvVulnerability, pkg Package) string {
+	var best string
+	for _, aff := range v.Affected {
+		if aff.Package.Name != pkg.Name || aff.Package.Ecosystem != pkg.Ecosystem {
+			continue
+		}
+		for _, r := range aff.Ranges {
+			if r.Type != "SEMVER" && r.Type != "ECOSYSTEM" {
+				continue
+			}
+			inRange := false
+			for _, ev := range r.Events {
+				if ev.Introduced != "" {
+					cmp, ok := compareVersions(pkg.Version, ev.Introduced, pkg.Ecosystem)
+					inRange = ev.Introduced == "0" || (ok && cmp >= 0)
+				}
+				if ev.Fixed != "" {
+					cmp, ok := compareVersions(pkg.Version, ev.Fixed, pkg.Ecosystem)
+					if inRange && ok && cmp < 0 {
+						if best == "" {
+							best = ev.Fixed
+						} else if c, comparable := compareVersions(ev.Fixed, best, pkg.Ecosystem); comparable && c < 0 {
+							best = ev.Fixed
+						}
+					}
+					inRange = false
+				}
+				if ev.LastAffected != "" || ev.Limit != "" {
+					inRange = false
+				}
+			}
+		}
+	}
+	return best
 }
 
 type osvBatchQuery struct {
@@ -78,7 +125,7 @@ type osvBatchResponse struct {
 	Results []osvResponse `json:"results"`
 }
 
-func parseVulns(res osvResponse) []Vulnerability {
+func parseVulns(res osvResponse, pkg Package) []Vulnerability {
 	if len(res.Vulns) == 0 {
 		return nil
 	}
@@ -91,46 +138,7 @@ func parseVulns(res osvResponse) []Vulnerability {
 			summary = strings.TrimSpace(firstLine)
 		}
 
-		var fixedVersion string
-		// Pass 1: Prioritize SEMVER or ECOSYSTEM ranges
-		for _, aff := range v.Affected {
-			for _, r := range aff.Ranges {
-				if r.Type == "SEMVER" || r.Type == "ECOSYSTEM" {
-					for _, ev := range r.Events {
-						if ev.Fixed != "" {
-							fixedVersion = ev.Fixed
-							break
-						}
-					}
-				}
-				if fixedVersion != "" {
-					break
-				}
-			}
-			if fixedVersion != "" {
-				break
-			}
-		}
-
-		// Pass 2: Fallback to any range where fixed is not a 40-character commit hash
-		if fixedVersion == "" {
-			for _, aff := range v.Affected {
-				for _, r := range aff.Ranges {
-					for _, ev := range r.Events {
-						if ev.Fixed != "" && len(ev.Fixed) < 40 {
-							fixedVersion = ev.Fixed
-							break
-						}
-					}
-					if fixedVersion != "" {
-						break
-					}
-				}
-				if fixedVersion != "" {
-					break
-				}
-			}
-		}
+		fixedVersion := fixedRelease(v, pkg)
 
 		vuln := Vulnerability{
 			ID:           v.ID,
@@ -153,8 +161,9 @@ func parseVulns(res osvResponse) []Vulnerability {
 		// Extract CVSS score from the severity array
 		for _, sev := range v.Severity {
 			if strings.Contains(sev.Type, "CVSS") {
-				vuln.CVSS = parseCVSSVector(sev.Score)
-				break
+				if score := parseCVSSVector(sev.Score); score > vuln.CVSS {
+					vuln.CVSS = score
+				}
 			}
 		}
 
@@ -202,12 +211,10 @@ func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
 
 		var bq osvBatchQuery
 		for _, pkg := range chunk {
-			version := pkg.Version
-			if version == "latest" {
-				if st, err := CheckStaleness(pkg); err == nil && st.LatestVersion != "" {
-					version = st.LatestVersion
-				}
+			if err := validateQueryVersion(pkg); err != nil {
+				return nil, err
 			}
+			version := pkg.Version
 			var q osvQuery
 			q.Package.Name = pkg.Name
 			q.Package.Ecosystem = pkg.Ecosystem
@@ -237,17 +244,24 @@ func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
 			return nil, fmt.Errorf("osv batch decode: %w", decodeErr)
 		}
 
+		if len(batchResp.Results) != len(chunk) {
+			return nil, fmt.Errorf("osv batch returned %d results for %d queries", len(batchResp.Results), len(chunk))
+		}
+
 		// Only packages with >= 1 vulnerability in the batch response need a full detail query
 		var vulnPkgs []Package
 		for idx, item := range batchResp.Results {
-			if idx < len(chunk) && len(item.Vulns) > 0 {
+			if len(item.Vulns) > 0 {
 				vulnPkgs = append(vulnPkgs, chunk[idx])
+			} else {
+				resultMap[chunk[idx].Key()] = nil
 			}
 		}
 
 		if len(vulnPkgs) > 0 {
 			sem := make(chan struct{}, 20)
 			var mu sync.Mutex
+			var detailErr error
 			var wg sync.WaitGroup
 			for _, vp := range vulnPkgs {
 				wg.Add(1)
@@ -256,14 +270,19 @@ func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
 					sem <- struct{}{}
 					vulns, err := QueryOSV(p)
 					<-sem
-					if err == nil {
-						mu.Lock()
+					mu.Lock()
+					if err != nil {
+						detailErr = err
+					} else {
 						resultMap[p.Key()] = vulns
-						mu.Unlock()
 					}
+					mu.Unlock()
 				}(vp)
 			}
 			wg.Wait()
+			if detailErr != nil {
+				return nil, fmt.Errorf("osv detail query: %w", detailErr)
+			}
 		}
 	}
 
@@ -271,12 +290,10 @@ func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
 }
 
 func QueryOSV(pkg Package) ([]Vulnerability, error) {
-	version := pkg.Version
-	if version == "latest" {
-		if st, err := CheckStaleness(pkg); err == nil && st.LatestVersion != "" {
-			version = st.LatestVersion
-		}
+	if err := validateQueryVersion(pkg); err != nil {
+		return nil, err
 	}
+	version := pkg.Version
 
 	// Build the request body
 	var q osvQuery
@@ -306,7 +323,7 @@ func QueryOSV(pkg Package) ([]Vulnerability, error) {
 		return nil, fmt.Errorf("osv decode: %w", err)
 	}
 
-	return parseVulns(result), nil
+	return parseVulns(result, pkg), nil
 }
 
 // parseCVSSVector extracts or calculates the base score from a CVSS vector string locally.

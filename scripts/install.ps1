@@ -7,10 +7,9 @@ $repo = "nyumuharon/dependency-tracker"
 $installDir = Join-Path $HOME ".dep-tracker\bin"
 $exePath = Join-Path $installDir "dep-tracker.exe"
 
-# 1. Determine architecture
-$arch = if ([System.Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
-if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-    $arch = "arm64"
+# Releases currently include Windows x64 only.
+if (-not [System.Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
+    throw "This installer requires Windows x64; no native release is available for this architecture."
 }
 
 # 2. Get latest release version tag
@@ -20,7 +19,7 @@ try {
     $release = Invoke-RestMethod -Uri $releaseUrl -Headers @{ "User-Agent" = "dep-tracker-installer" }
     $tag = $release.tag_name
 } catch {
-    $tag = "v1.0.2"
+    throw "Unable to determine latest release: $_"
 }
 
 # 3. Create install directory
@@ -34,13 +33,14 @@ Write-Host "Downloading dep-tracker ($tag)..." -ForegroundColor Cyan
 
 $tempFile = Join-Path $env:TEMP "dep-tracker-download-$((Get-Random)).exe"
 try {
-    # Use curl.exe if available for speed and reliability, otherwise fallback to WebClient
-    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-        & curl.exe -L --progress-bar -o $tempFile $downloadUrl
-    } else {
-        $wc = New-Object System.Net.WebClient
-        $wc.DownloadFile($downloadUrl, $tempFile)
-    }
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempFile -UseBasicParsing
+    $checksumUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS.txt"
+    $manifest = (Invoke-WebRequest -Uri $checksumUrl -UseBasicParsing).Content
+    $entries = @($manifest -split "`n" | Where-Object { $_ -match '^[0-9a-fA-F]{64}\s+\*?dep-tracker-windows-amd64\.exe\s*$' })
+    if ($entries.Count -ne 1) { throw "Missing or ambiguous release checksum." }
+    $expected = ($entries[0] -split '\s+')[0]
+    $actual = (Get-FileHash -Path $tempFile -Algorithm SHA256).Hash
+    if ($actual -ine $expected) { throw "Checksum mismatch; installation cancelled." }
 
     Move-Item -Path $tempFile -Destination $exePath -Force
 } catch {

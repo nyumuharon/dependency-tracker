@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -96,21 +98,9 @@ func runUpdate() error {
 		return fmt.Errorf("self-update is not supported on %s/%s", goos, goarch)
 	}
 
-	downloadURL := fmt.Sprintf("https://github.com/nyumuharon/dependency-tracker/releases/download/%s/%s", latestTag, binaryName)
+	releaseURL := fmt.Sprintf("https://github.com/nyumuharon/dependency-tracker/releases/download/%s", latestTag)
 	fmt.Printf("Downloading %s from %s...\n", binaryName, latestTag)
 
-	downloadClient := &http.Client{Timeout: 10 * time.Minute}
-	binResp, err := downloadClient.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("failed to download update: %w", err)
-	}
-	defer binResp.Body.Close()
-
-	if binResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with HTTP %d from %s", binResp.StatusCode, downloadURL)
-	}
-
-	// Determine currently running executable path
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot find current executable path: %w", err)
@@ -119,28 +109,12 @@ func runUpdate() error {
 	if err != nil {
 		return fmt.Errorf("cannot resolve executable path: %w", err)
 	}
-
-	exeDir := filepath.Dir(exePath)
-	tmpPath := filepath.Join(exeDir, fmt.Sprintf(".dep-tracker-update-%d.tmp", time.Now().UnixNano()))
-
-	// Save downloaded file to temp path
-	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	downloadClient := &http.Client{Timeout: 10 * time.Minute}
+	tmpPath, err := downloadVerifiedUpdate(downloadClient, releaseURL, binaryName, filepath.Dir(exePath))
 	if err != nil {
-		if os.IsPermission(err) {
-			if goos == "windows" {
-				return fmt.Errorf("permission denied writing to %s (try running terminal as Administrator)", exeDir)
-			}
-			return fmt.Errorf("permission denied writing to %s (try running: sudo dep-tracker update)", exeDir)
-		}
-		return fmt.Errorf("failed to create temporary file: %w", err)
+		return err
 	}
-
-	_, copyErr := io.Copy(tmpFile, binResp.Body)
-	tmpFile.Close()
-	if copyErr != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("download stream interrupted: %w", copyErr)
-	}
+	defer os.Remove(tmpPath)
 
 	// Replace the current executable
 	if goos == "windows" {
@@ -179,4 +153,79 @@ func runUpdate() error {
 	fmt.Printf(" Location: %s\n", exePath)
 	fmt.Printf("============================================================\n")
 	return nil
+}
+
+// releaseChecksum requires one well-formed checksum for the exact asset name.
+func releaseChecksum(manifest, asset string) (string, error) {
+	var checksum string
+	for _, line := range strings.Split(manifest, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || strings.TrimPrefix(fields[1], "*") != asset {
+			continue
+		}
+		if checksum != "" {
+			return "", fmt.Errorf("duplicate checksum for %s", asset)
+		}
+		decoded, err := hex.DecodeString(fields[0])
+		if err != nil || len(decoded) != sha256.Size {
+			return "", fmt.Errorf("invalid checksum for %s", asset)
+		}
+		checksum = strings.ToLower(fields[0])
+	}
+	if checksum == "" {
+		return "", fmt.Errorf("missing checksum for %s", asset)
+	}
+	return checksum, nil
+}
+
+// downloadVerifiedUpdate returns a temporary binary only after verifying the
+// checksum. It never changes the installed executable and removes failed downloads.
+func downloadVerifiedUpdate(client *http.Client, releaseURL, binaryName, destinationDir string) (path string, err error) {
+	checksumResp, err := client.Get(releaseURL + "/SHA256SUMS.txt")
+	if err != nil {
+		return "", fmt.Errorf("download checksums: %w", err)
+	}
+	defer checksumResp.Body.Close()
+	if checksumResp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("checksum download returned HTTP %d", checksumResp.StatusCode)
+	}
+	checksums, err := io.ReadAll(io.LimitReader(checksumResp.Body, 1024*1024))
+	if err != nil {
+		return "", fmt.Errorf("read checksums: %w", err)
+	}
+	expectedHash, err := releaseChecksum(string(checksums), binaryName)
+	if err != nil {
+		return "", err
+	}
+	binResp, err := client.Get(releaseURL + "/" + binaryName)
+	if err != nil {
+		return "", fmt.Errorf("download binary: %w", err)
+	}
+	defer binResp.Body.Close()
+	if binResp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("binary download returned HTTP %d", binResp.StatusCode)
+	}
+	tmpFile, err := os.CreateTemp(destinationDir, ".dep-tracker-update-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("create update file in %s: %w", destinationDir, err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		if err != nil {
+			os.Remove(tmpPath)
+		}
+	}()
+	hasher := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(tmpFile, hasher), binResp.Body)
+	closeErr := tmpFile.Close()
+	if copyErr != nil {
+		return "", fmt.Errorf("download interrupted: %w", copyErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("save update: %w", closeErr)
+	}
+	if hex.EncodeToString(hasher.Sum(nil)) != expectedHash {
+		return "", fmt.Errorf("checksum mismatch for %s; update cancelled", binaryName)
+	}
+	return tmpPath, nil
 }

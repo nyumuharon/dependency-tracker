@@ -15,3 +15,15 @@ func Score(cvss float64, epss float64, hasCVE bool, isKEV bool) string {
 	}
 	return "LOW"
 }
+
+// ScoreVulnerabilities applies both exploitability thresholds to the same advisory.
+func ScoreVulnerabilities(vulns []Vulnerability) string {
+	tier := "NONE"
+	for _, v := range vulns {
+		candidate := Score(v.CVSS, v.EPSS, true, v.IsKEV)
+		if tierRank(candidate) < tierRank(tier) {
+			tier = candidate
+		}
+	}
+	return tier
+}
