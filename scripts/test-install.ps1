@@ -1,0 +1,64 @@
+# Offline tests run on native Windows. All downloads are mocked and the user
+# and process PATH are restored when testing finishes.
+$ErrorActionPreference = 'Stop'
+$installerPath = Join-Path $PSScriptRoot 'install.ps1'
+$testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('dep-tracker-test-' + [guid]::NewGuid())
+$originalProcessPath = $env:Path
+$originalUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$originalInstallDir = $env:DEP_TRACKER_INSTALL_DIR
+New-Item -ItemType Directory -Path $testRoot | Out-Null
+$fixture = Join-Path $testRoot 'fixture.exe'
+[IO.File]::WriteAllText($fixture, 'verified binary')
+$fixtureHash = (Get-FileHash -Path $fixture -Algorithm SHA256).Hash
+
+function Invoke-RestMethod {
+    param($Uri, $Headers)
+    if ($script:mockMode -eq 'api-failed') { throw 'Simulated API failure' }
+    return [pscustomobject]@{ tag_name = 'v1.0.6' }
+}
+
+function Invoke-WebRequest {
+    param($Uri, $OutFile, [switch]$UseBasicParsing)
+    if ($Uri -like '*/SHA256SUMS.txt') {
+        if ($script:mockMode -eq 'missing-checksum') { return [pscustomobject]@{ Content = '' } }
+        return [pscustomobject]@{ Content = "$fixtureHash  dep-tracker-windows-amd64.exe`n" }
+    }
+    if ($script:mockMode -eq 'download-failed') { throw 'Simulated download failure' }
+    if ($script:mockMode -eq 'tampered') {
+        [IO.File]::WriteAllText($OutFile, 'tampered binary')
+    } else {
+        Copy-Item -Path $fixture -Destination $OutFile
+    }
+}
+
+try {
+    foreach ($mode in @('valid', 'tampered', 'missing-checksum', 'download-failed', 'api-failed')) {
+        $script:mockMode = $mode
+        $env:DEP_TRACKER_INSTALL_DIR = Join-Path $testRoot $mode
+        New-Item -ItemType Directory -Path $env:DEP_TRACKER_INSTALL_DIR | Out-Null
+        $installed = Join-Path $env:DEP_TRACKER_INSTALL_DIR 'dep-tracker.exe'
+        [IO.File]::WriteAllText($installed, 'existing binary')
+        $succeeded = $false
+        try {
+            & $installerPath
+            $succeeded = $true
+        } catch {
+            if ($mode -eq 'valid') { throw }
+        }
+        if ($succeeded -ne ($mode -eq 'valid')) { throw "Unexpected outcome: $mode" }
+        if ($mode -eq 'valid') {
+            if ((Get-FileHash $installed -Algorithm SHA256).Hash -ne $fixtureHash) { throw 'Installed binary differs from the verified download' }
+            if (($env:Path -split ';') -notcontains $env:DEP_TRACKER_INSTALL_DIR) { throw 'Process PATH was not updated' }
+            $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            if (($userPath -split ';') -notcontains $env:DEP_TRACKER_INSTALL_DIR) { throw 'User PATH was not updated' }
+        } elseif ([IO.File]::ReadAllText($installed) -ne 'existing binary') {
+            throw "Existing executable changed after failure: $mode"
+        }
+        Write-Host "Installer test passed: $mode"
+    }
+} finally {
+    $env:Path = $originalProcessPath
+    [Environment]::SetEnvironmentVariable('Path', $originalUserPath, 'User')
+    $env:DEP_TRACKER_INSTALL_DIR = $originalInstallDir
+    Remove-Item -Recurse -Force $testRoot
+}

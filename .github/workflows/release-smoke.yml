@@ -1,0 +1,48 @@
+name: Published release smoke tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Expected latest release version (without v)
+        required: true
+        default: '1.0.6'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install published Linux binary and check version
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          DEP_TRACKER_INSTALL_DIR: ${{ runner.temp }}/dep-tracker-live/bin
+        run: |
+          bash scripts/install.sh
+          test "$("$DEP_TRACKER_INSTALL_DIR/dep-tracker" version)" = "dep-tracker $EXPECTED_VERSION"
+          "$DEP_TRACKER_INSTALL_DIR/dep-tracker" --help
+          "$DEP_TRACKER_INSTALL_DIR/dep-tracker" update
+
+  windows-install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install published Windows binary, check PATH and run executable
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          DEP_TRACKER_INSTALL_DIR: ${{ runner.temp }}\dep-tracker-live\bin
+        run: |
+          ./scripts/install.ps1
+          if ((Get-Command dep-tracker).Source -ne (Join-Path $env:DEP_TRACKER_INSTALL_DIR 'dep-tracker.exe')) {
+            throw 'PATH does not resolve the installed executable'
+          }
+          $version = dep-tracker version
+          if ($LASTEXITCODE -ne 0 -or $version -ne "dep-tracker $env:EXPECTED_VERSION") { throw "Unexpected version: $version" }
+          dep-tracker --help
+          if ($LASTEXITCODE -ne 0) { throw 'Help command failed' }
+          dep-tracker update
+          if ($LASTEXITCODE -ne 0) { throw 'Update check failed' }

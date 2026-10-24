@@ -257,6 +257,8 @@ go vet ./...
 bash scripts/test-install.sh
 ```
 
+On Windows, run the offline installer regression tests with `pwsh -File scripts/test-install.ps1`. The CI and release workflows run them on a native Windows runner. The manually triggered **Published release smoke tests** workflow checks installation, executable startup, PATH configuration, and update checks against the current published release on Linux and Windows.
+
 ---
 
 Pushes and pull requests run CI checks. The release workflow also runs the race-enabled Go tests and `go vet` before building and publishing binaries.

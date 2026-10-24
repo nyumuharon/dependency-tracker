@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 
 $repo = "nyumuharon/dependency-tracker"
-$installDir = Join-Path $HOME ".dep-tracker\bin"
+$installDir = if ($env:DEP_TRACKER_INSTALL_DIR) { $env:DEP_TRACKER_INSTALL_DIR } else { Join-Path $HOME ".dep-tracker\bin" }
 $exePath = Join-Path $installDir "dep-tracker.exe"
 
 # Releases currently include Windows x64 only.
