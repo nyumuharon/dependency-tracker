@@ -61,6 +61,8 @@ func TestMalformedInstalledEnvironmentsMakeDiscoveryIncomplete(t *testing.T) {
 		{"python", ".venv/lib/python3.12/site-packages/broken-1.dist-info/METADATA", "Name: broken\n\n"},
 		{"python-direct-url", ".venv/lib/python3.12/site-packages/broken-1.dist-info/direct_url.json", "{bad"},
 		{"node", "node_modules/broken/package.json", "{bad"},
+		{"node-lock-shape", "node_modules/.package-lock.json", "{}"},
+		{"dotnet-type", "obj/project.assets.json", `{"libraries":{"example/1.0.0":{}}}`},
 		{"composer", "vendor/composer/installed.json", "{bad"},
 		{"dotnet", "obj/project.assets.json", "{\"libraries\":{\"invalid\":{\"type\":\"package\"}}}"},
 		{"ruby", "vendor/bundle/ruby/3.3.0/specifications/broken.gemspec", "# unreadable version"},

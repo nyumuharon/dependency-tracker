@@ -146,3 +146,26 @@ func TestReportsExposeUnknownEPSSAndKnownZero(t *testing.T) {
 		}
 	}
 }
+
+func TestNullCachesFallBackToFreshData(t *testing.T) {
+	t.Setenv("DEP_TRACKER_CACHE_DIR", t.TempDir())
+	for _, path := range []string{getNVDCachePath(), getStalenessCachePath()} {
+		if err := os.WriteFile(path, []byte("null"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nvdCacheOnce = sync.Once{}
+	stalenessCacheOnce = sync.Once{}
+	mockHTTP(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "services.nvd.nist.gov" {
+			return response(200, `{"vulnerabilities":[{"cve":{"metrics":{"cvssMetricV31":[{"cvssData":{"baseScore":7.5}}]}}}]}`), nil
+		}
+		return response(200, fmt.Sprintf(`{"dist-tags":{"latest":"1.0.0"},"time":{"1.0.0":%q}}`, time.Now().UTC().Format(time.RFC3339))), nil
+	})
+	if score, err := QueryNVD("CVE-2026-11111"); err != nil || score != 7.5 {
+		t.Fatalf("%v %v", score, err)
+	}
+	if result, err := CheckStaleness(Package{Name: "example", Ecosystem: "npm"}); err != nil || result.LatestVersion != "1.0.0" {
+		t.Fatalf("%+v %v", result, err)
+	}
+}

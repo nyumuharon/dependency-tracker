@@ -37,6 +37,9 @@ func loadStalenessCache() {
 		data, err := os.ReadFile(getStalenessCachePath())
 		if err == nil {
 			_ = json.Unmarshal(data, &stalenessCacheData)
+			if stalenessCacheData == nil {
+				stalenessCacheData = make(map[string]StalenessResult)
+			}
 		}
 	})
 }

@@ -32,6 +32,9 @@ func loadNVDCache() {
 		nvdCacheData = make(map[string]nvdCacheEntry)
 		if data, err := os.ReadFile(getNVDCachePath()); err == nil {
 			_ = json.Unmarshal(data, &nvdCacheData)
+			if nvdCacheData == nil {
+				nvdCacheData = make(map[string]nvdCacheEntry)
+			}
 		}
 	})
 }

@@ -23,6 +23,9 @@ func (e *DiscoveryError) Unwrap() []error { return e.Issues }
 func optionalInstalledFile(path string) ([]byte, bool, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
+		if _, linkErr := os.Lstat(path); linkErr == nil {
+			return nil, true, fmt.Errorf("read %s: %w", path, err)
+		}
 		return nil, false, nil
 	}
 	if err != nil {
@@ -262,6 +265,9 @@ func inspectDotNetAssets(path string) ([]Package, error) {
 	}
 	var pkgs []Package
 	for key, lib := range assets.Libraries {
+		if lib.Type == "" {
+			return pkgs, fmt.Errorf("invalid library %q in %s: missing type", key, path)
+		}
 		if !strings.EqualFold(lib.Type, "package") {
 			continue
 		}
@@ -389,9 +395,16 @@ func inspectNodeModules(root string) ([]Package, error) {
 		}
 		visited[absolute] = true
 		hiddenLock := filepath.Join(dir, ".package-lock.json")
-		if _, exists, err := optionalInstalledFile(hiddenLock); err != nil {
+		if data, exists, err := optionalInstalledFile(hiddenLock); err != nil {
 			return err
 		} else if exists {
+			var metadata map[string]json.RawMessage
+			if err := json.Unmarshal(data, &metadata); err != nil {
+				return fmt.Errorf("invalid %s: %w", hiddenLock, err)
+			}
+			if metadata["packages"] == nil && metadata["dependencies"] == nil && metadata["lockfileVersion"] == nil {
+				return fmt.Errorf("invalid %s: missing lockfile metadata", hiddenLock)
+			}
 			locked, err := parseNPMLock(hiddenLock)
 			if err != nil {
 				return err
