@@ -210,7 +210,7 @@ func ParsePath(targetPath string) ([]Package, error) {
 		fmt.Fprintf(os.Stderr, "Discovering dependency manifests in directory: %s\n", targetPath)
 		pkgs, sources, err := DiscoverDependencies(targetPath)
 		if err != nil {
-			return nil, fmt.Errorf("project discovery failed: %w", err)
+			return pkgs, fmt.Errorf("project discovery failed: %w", err)
 		}
 		if len(sources) == 0 && len(pkgs) == 0 {
 			return nil, fmt.Errorf("no dependencies, manifests, environments, or imports found in directory: %s", targetPath)
@@ -272,6 +272,20 @@ func ParseManifest(filePath string) ([]Package, error) {
 }
 
 func parseManifestRaw(filePath string) ([]Package, error) {
+	switch filepath.Base(filePath) {
+	case "project.assets.json":
+		return inspectDotNetAssets(filePath)
+	case "package_config.json":
+		return inspectDartPackageConfig(filePath)
+	case "installed.json":
+		return inspectComposerInstalled(filePath)
+	case "METADATA", "PKG-INFO":
+		name, version, err := parsePythonMetadataFile(filePath)
+		if err != nil {
+			return nil, err
+		}
+		return []Package{{Name: name, Version: version, Ecosystem: "PyPI", ManifestPath: filePath}}, nil
+	}
 	switch {
 	// JavaScript / TypeScript lockfiles & manifests
 	case strings.HasSuffix(filePath, "package-lock.json"):
@@ -824,9 +838,20 @@ func parseYarnLock(filePath string) ([]Package, error) {
 		}
 
 		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && strings.HasSuffix(trimmed, ":") {
+			if strings.Contains(trimmed, "@workspace:") || trimmed == "__metadata:" {
+				currentPkgName = ""
+				continue
+			}
 			entry := strings.TrimSuffix(trimmed, ":")
 			firstPart := strings.Trim(strings.Split(entry, ",")[0], `" `)
-			lastAt := strings.LastIndex(firstPart, "@")
+			lastAt := strings.Index(firstPart, "@")
+			if strings.HasPrefix(firstPart, "@") {
+				if slash := strings.Index(firstPart, "/"); slash >= 0 {
+					if at := strings.Index(firstPart[slash+1:], "@"); at >= 0 {
+						lastAt = slash + 1 + at
+					}
+				}
+			}
 			if lastAt > 0 {
 				currentPkgName = firstPart[:lastAt]
 			} else {
@@ -835,8 +860,8 @@ func parseYarnLock(filePath string) ([]Package, error) {
 			continue
 		}
 
-		if currentPkgName != "" && strings.HasPrefix(trimmed, "version ") {
-			version := strings.Trim(strings.TrimPrefix(trimmed, "version "), `" `)
+		if currentPkgName != "" && (strings.HasPrefix(trimmed, "version ") || strings.HasPrefix(trimmed, "version:")) {
+			version := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(trimmed, "version "), "version:"), `" `)
 			if version != "" {
 				uniqueKey := currentPkgName + "@" + version
 				if !seen[uniqueKey] {
@@ -880,10 +905,18 @@ func parsePnpmLock(filePath string) ([]Package, error) {
 			inPackages = false
 			continue
 		}
-		if inPackages && strings.HasSuffix(trimmed, ":") {
+		if inPackages && strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && strings.HasSuffix(trimmed, ":") {
 			pkgSpec := strings.TrimSuffix(trimmed, ":")
-			pkgSpec = strings.Trim(pkgSpec, `"' /`)
+			pkgSpec = strings.Trim(pkgSpec, `"' `)
+			pkgSpec = strings.TrimPrefix(pkgSpec, "/")
+			pkgSpec = strings.SplitN(pkgSpec, "(", 2)[0]
 			lastAt := strings.LastIndex(pkgSpec, "@")
+			if lastAt <= 0 {
+				if slash := strings.LastIndex(pkgSpec, "/"); slash > 0 {
+					pkgSpec = pkgSpec[:slash] + "@" + pkgSpec[slash+1:]
+					lastAt = slash
+				}
+			}
 			if lastAt > 0 {
 				name := pkgSpec[:lastAt]
 				version := pkgSpec[lastAt+1:]
@@ -1642,6 +1675,7 @@ func isCandidateDependencyFile(fileName string) bool {
 // installed environments (venv, node_modules, vendor, obj/project.assets.json, vcpkg_installed, .dart_tool),
 // and source-code imports across all supported languages.
 func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
+	var discoveryIssues []error
 	dirFiles := make(map[string][]string)
 	var venvDirs []string
 	var nodeModulesDirs []string
@@ -1673,6 +1707,8 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 				assets := filepath.Join(path, "project.assets.json")
 				if _, statErr := os.Stat(assets); statErr == nil {
 					dotNetAssetFiles = append(dotNetAssetFiles, assets)
+				} else if !os.IsNotExist(statErr) {
+					discoveryIssues = append(discoveryIssues, fmt.Errorf("stat %s: %w", assets, statErr))
 				}
 				return filepath.SkipDir
 			}
@@ -1680,6 +1716,8 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 				statusFile := filepath.Join(path, "vcpkg", "status")
 				if _, statErr := os.Stat(statusFile); statErr == nil {
 					vcpkgStatusFiles = append(vcpkgStatusFiles, statusFile)
+				} else if !os.IsNotExist(statErr) {
+					discoveryIssues = append(discoveryIssues, fmt.Errorf("stat %s: %w", statusFile, statErr))
 				}
 				return filepath.SkipDir
 			}
@@ -1687,6 +1725,8 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 				pkgCfg := filepath.Join(path, "package_config.json")
 				if _, statErr := os.Stat(pkgCfg); statErr == nil {
 					dartPackageConfigs = append(dartPackageConfigs, pkgCfg)
+				} else if !os.IsNotExist(statErr) {
+					discoveryIssues = append(discoveryIssues, fmt.Errorf("stat %s: %w", pkgCfg, statErr))
 				}
 				return filepath.SkipDir
 			}
@@ -1716,7 +1756,7 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, &DiscoveryError{Issues: []error{err}}
 	}
 
 	var discoveredSources []string
@@ -1782,93 +1822,47 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 		}
 	}
 
+	type environment struct {
+		path, project, eco string
+		read               func() ([]Package, error)
+	}
+	var environments []environment
+	for _, dir := range venvDirs {
+		environments = append(environments, environment{dir, filepath.Dir(dir), "PyPI", func() ([]Package, error) { return inspectPythonVenv(dir, localModuleNames) }})
+	}
+	for _, dir := range nodeModulesDirs {
+		environments = append(environments, environment{dir, filepath.Dir(dir), "npm", func() ([]Package, error) { return inspectNodeModules(dir) }})
+	}
+	for _, dir := range vendorDirs {
+		environments = append(environments,
+			environment{filepath.Join(dir, "modules.txt"), filepath.Dir(dir), "Go", func() ([]Package, error) { return inspectGoVendorModules(filepath.Join(dir, "modules.txt")) }},
+			environment{filepath.Join(dir, "composer", "installed.json"), filepath.Dir(dir), "Packagist", func() ([]Package, error) {
+				return inspectComposerInstalled(filepath.Join(dir, "composer", "installed.json"))
+			}},
+			environment{filepath.Join(dir, "bundle"), filepath.Dir(dir), "RubyGems", func() ([]Package, error) { return inspectRubyVendorBundle(dir) }})
+	}
+	for _, path := range dotNetAssetFiles {
+		environments = append(environments, environment{path, filepath.Dir(filepath.Dir(path)), "NuGet", func() ([]Package, error) { return inspectDotNetAssets(path) }})
+	}
+	for _, path := range vcpkgStatusFiles {
+		environments = append(environments, environment{path, filepath.Dir(filepath.Dir(filepath.Dir(path))), "ConanCenter", func() ([]Package, error) { return inspectVcpkgStatus(path) }})
+	}
+	for _, path := range dartPackageConfigs {
+		environments = append(environments, environment{path, filepath.Dir(filepath.Dir(path)), "Pub", func() ([]Package, error) { return inspectDartPackageConfig(path) }})
+	}
 	var envPkgs []Package
-	if len(venvDirs) > 0 {
-		for _, vDir := range venvDirs {
-			if hasLock(filepath.Dir(vDir), "PyPI") {
-				continue
-			}
-			vPkgs := inspectPythonVenv(vDir, localModuleNames)
-			if len(vPkgs) > 0 {
-				discoveredSources = append(discoveredSources, filepath.Join(vDir, "pyvenv.cfg"))
-				envPkgs = append(envPkgs, appendEnv(vPkgs, filepath.Dir(vDir))...)
-			}
+	for _, env := range environments {
+		if hasLock(env.project, env.eco) {
+			continue
 		}
-	}
-
-	if len(nodeModulesDirs) > 0 {
-		for _, nmDir := range nodeModulesDirs {
-			if hasLock(filepath.Dir(nmDir), "npm") {
-				continue
-			}
-			nmPkgs := inspectNodeModules(nmDir)
-			if len(nmPkgs) > 0 {
-				discoveredSources = append(discoveredSources, nmDir)
-				envPkgs = append(envPkgs, appendEnv(nmPkgs, filepath.Dir(nmDir))...)
-			}
+		pkgs, err := env.read()
+		if err != nil {
+			discoveryIssues = append(discoveryIssues, fmt.Errorf("inspect %s: %w", env.path, err))
 		}
-	}
-
-	for _, vDir := range vendorDirs {
-		// Go vendor/modules.txt
-		if !hasLock(filepath.Dir(vDir), "Go") {
-			modTxt := filepath.Join(vDir, "modules.txt")
-			if gPkgs := inspectGoVendorModules(modTxt); len(gPkgs) > 0 {
-				discoveredSources = append(discoveredSources, modTxt)
-				envPkgs = append(envPkgs, appendEnv(gPkgs, filepath.Dir(vDir))...)
-			}
+		if len(pkgs) > 0 || err != nil {
+			discoveredSources = append(discoveredSources, env.path)
 		}
-		// PHP vendor/composer/installed.json
-		if !hasLock(filepath.Dir(vDir), "Packagist") {
-			compInst := filepath.Join(vDir, "composer", "installed.json")
-			if pPkgs := inspectComposerInstalled(compInst); len(pPkgs) > 0 {
-				discoveredSources = append(discoveredSources, compInst)
-				envPkgs = append(envPkgs, appendEnv(pPkgs, filepath.Dir(vDir))...)
-			}
-		}
-		// Ruby vendor/bundle/**/specifications/*.gemspec
-		if !hasLock(filepath.Dir(vDir), "RubyGems") {
-			if rPkgs := inspectRubyVendorBundle(vDir); len(rPkgs) > 0 {
-				discoveredSources = append(discoveredSources, vDir)
-				envPkgs = append(envPkgs, appendEnv(rPkgs, filepath.Dir(vDir))...)
-			}
-		}
-	}
-
-	if len(dotNetAssetFiles) > 0 {
-		for _, af := range dotNetAssetFiles {
-			if hasLock(filepath.Dir(filepath.Dir(af)), "NuGet") {
-				continue
-			}
-			if nPkgs := inspectDotNetAssets(af); len(nPkgs) > 0 {
-				discoveredSources = append(discoveredSources, af)
-				envPkgs = append(envPkgs, appendEnv(nPkgs, filepath.Dir(filepath.Dir(af)))...)
-			}
-		}
-	}
-
-	if len(vcpkgStatusFiles) > 0 {
-		for _, sf := range vcpkgStatusFiles {
-			if hasLock(filepath.Dir(filepath.Dir(filepath.Dir(sf))), "ConanCenter") {
-				continue
-			}
-			if cPkgs := inspectVcpkgStatus(sf); len(cPkgs) > 0 {
-				discoveredSources = append(discoveredSources, sf)
-				envPkgs = append(envPkgs, appendEnv(cPkgs, filepath.Dir(filepath.Dir(filepath.Dir(sf))))...)
-			}
-		}
-	}
-
-	if len(dartPackageConfigs) > 0 {
-		for _, dcf := range dartPackageConfigs {
-			if hasLock(filepath.Dir(filepath.Dir(dcf)), "Pub") {
-				continue
-			}
-			if dPkgs := inspectDartPackageConfig(dcf); len(dPkgs) > 0 {
-				discoveredSources = append(discoveredSources, dcf)
-				envPkgs = append(envPkgs, appendEnv(dPkgs, filepath.Dir(filepath.Dir(dcf)))...)
-			}
-		}
+		envPkgs = append(envPkgs, appendEnv(pkgs, env.project)...)
 	}
 
 	finalPkgs := mergeManifestAndEnvPackages(manifestPkgs, envPkgs)
@@ -1908,6 +1902,9 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 		}
 	}
 
+	if len(discoveryIssues) > 0 {
+		return finalPkgs, discoveredSources, &DiscoveryError{Issues: discoveryIssues}
+	}
 	return finalPkgs, discoveredSources, nil
 }
 
@@ -1979,402 +1976,8 @@ var defaultVenvSkipPkgs = map[string]bool{
 	"distribute": true,
 }
 
-func inspectPythonVenv(venvDir string, localModules map[string]bool) []Package {
-	var metadataFiles []string
-	_ = filepath.WalkDir(venvDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if name == "__pycache__" || name == "include" || name == "bin" || name == "Scripts" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if (d.Name() == "METADATA" || d.Name() == "PKG-INFO") &&
-			(strings.HasSuffix(filepath.Dir(path), ".dist-info") || strings.HasSuffix(filepath.Dir(path), ".egg-info")) {
-			metadataFiles = append(metadataFiles, path)
-		}
-		return nil
-	})
-
-	sort.Strings(metadataFiles)
-	var pkgs []Package
-	seen := make(map[string]bool)
-
-	for _, metaPath := range metadataFiles {
-		distDir := filepath.Dir(metaPath)
-		if isEditableInstall(filepath.Join(distDir, "direct_url.json")) {
-			continue
-		}
-
-		name, version := parsePythonMetadataFile(metaPath)
-		if name == "" || version == "" {
-			continue
-		}
-		norm := strings.ReplaceAll(strings.ToLower(name), "-", "_")
-		if defaultVenvSkipPkgs[strings.ToLower(name)] || localModules[norm] {
-			continue
-		}
-
-		p := Package{
-			Name:         name,
-			Version:      version,
-			Ecosystem:    "PyPI",
-			ManifestPath: metaPath,
-		}
-		if !seen[p.Key()] {
-			seen[p.Key()] = true
-			pkgs = append(pkgs, p)
-		}
-	}
-
-	return pkgs
-}
-
-func inspectGoVendorModules(modulesTxtPath string) []Package {
-	f, err := os.Open(modulesTxtPath)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	var pkgs []Package
-	seen := make(map[string]bool)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		// Format: "# github.com/pkg/errors v0.9.1"
-		if strings.HasPrefix(line, "# ") {
-			fields := strings.Fields(line)
-			if len(fields) >= 3 && strings.HasPrefix(fields[2], "v") {
-				p := Package{
-					Name:         fields[1],
-					Version:      fields[2],
-					Ecosystem:    "Go",
-					ManifestPath: modulesTxtPath,
-				}
-				if !seen[p.Key()] {
-					seen[p.Key()] = true
-					pkgs = append(pkgs, p)
-				}
-			}
-		}
-	}
-	return pkgs
-}
-
-func inspectComposerInstalled(installedPath string) []Package {
-	data, err := os.ReadFile(installedPath)
-	if err != nil {
-		return nil
-	}
-
-	type compPkg struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
-	}
-
-	var list []compPkg
-	var v2 struct {
-		Packages []compPkg `json:"packages"`
-	}
-	if err := json.Unmarshal(data, &v2); err == nil && len(v2.Packages) > 0 {
-		list = v2.Packages
-	} else {
-		_ = json.Unmarshal(data, &list)
-	}
-
-	var pkgs []Package
-	seen := make(map[string]bool)
-	for _, item := range list {
-		name := strings.TrimSpace(item.Name)
-		ver := strings.TrimPrefix(strings.TrimSpace(item.Version), "v")
-		if name == "" || ver == "" || name == "php" || strings.HasPrefix(name, "ext-") || strings.HasPrefix(name, "lib-") {
-			continue
-		}
-		p := Package{
-			Name:         name,
-			Version:      ver,
-			Ecosystem:    "Packagist",
-			ManifestPath: installedPath,
-		}
-		if !seen[p.Key()] {
-			seen[p.Key()] = true
-			pkgs = append(pkgs, p)
-		}
-	}
-	return pkgs
-}
-
 var gemspecFileRe = regexp.MustCompile(`^(.+)-([0-9]+\.[0-9]+(?:\.[0-9a-zA-Z._-]+)?)\.gemspec$`)
 
-func inspectRubyVendorBundle(vendorDir string) []Package {
-	var pkgs []Package
-	seen := make(map[string]bool)
-
-	_ = filepath.WalkDir(vendorDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if filepath.Base(filepath.Dir(path)) == "specifications" && strings.HasSuffix(d.Name(), ".gemspec") {
-			if m := gemspecFileRe.FindStringSubmatch(d.Name()); len(m) == 3 {
-				p := Package{
-					Name:         m[1],
-					Version:      m[2],
-					Ecosystem:    "RubyGems",
-					ManifestPath: path,
-				}
-				if !seen[p.Key()] {
-					seen[p.Key()] = true
-					pkgs = append(pkgs, p)
-				}
-			}
-		}
-		return nil
-	})
-
-	return pkgs
-}
-
-func inspectDotNetAssets(assetsPath string) []Package {
-	data, err := os.ReadFile(assetsPath)
-	if err != nil {
-		return nil
-	}
-	var assets struct {
-		Libraries map[string]struct {
-			Type string `json:"type"`
-		} `json:"libraries"`
-	}
-	if err := json.Unmarshal(data, &assets); err != nil {
-		return nil
-	}
-
-	var pkgs []Package
-	seen := make(map[string]bool)
-	for key, lib := range assets.Libraries {
-		if !strings.EqualFold(lib.Type, "package") {
-			continue
-		}
-		parts := strings.SplitN(key, "/", 2)
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			p := Package{
-				Name:         parts[0],
-				Version:      parts[1],
-				Ecosystem:    "NuGet",
-				ManifestPath: assetsPath,
-			}
-			if !seen[p.Key()] {
-				seen[p.Key()] = true
-				pkgs = append(pkgs, p)
-			}
-		}
-	}
-	return pkgs
-}
-
-func inspectVcpkgStatus(statusPath string) []Package {
-	f, err := os.Open(statusPath)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	var pkgs []Package
-	seen := make(map[string]bool)
-	var curName, curVer, curStatus string
-	isFeature := false
-
-	flush := func() {
-		if curName != "" && curVer != "" && !isFeature &&
-			strings.Contains(curStatus, "installed") && !strings.Contains(curStatus, "not-installed") {
-			p := Package{
-				Name:         curName,
-				Version:      curVer,
-				Ecosystem:    "ConanCenter",
-				ManifestPath: statusPath,
-			}
-			if !seen[p.Key()] {
-				seen[p.Key()] = true
-				pkgs = append(pkgs, p)
-			}
-		}
-		curName, curVer, curStatus = "", "", ""
-		isFeature = false
-	}
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			flush()
-			continue
-		}
-		if strings.HasPrefix(line, "Package:") {
-			curName = strings.TrimSpace(strings.TrimPrefix(line, "Package:"))
-		} else if strings.HasPrefix(line, "Feature:") {
-			isFeature = true
-		} else if strings.HasPrefix(line, "Version:") {
-			curVer = strings.TrimSpace(strings.TrimPrefix(line, "Version:"))
-		} else if strings.HasPrefix(line, "Status:") {
-			curStatus = strings.TrimSpace(strings.TrimPrefix(line, "Status:"))
-		}
-	}
-	flush()
-
-	return pkgs
-}
-
-func inspectDartPackageConfig(configPath string) []Package {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil
-	}
-	var cfg struct {
-		Packages []struct {
-			Name    string `json:"name"`
-			RootURI string `json:"rootUri"`
-		} `json:"packages"`
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil
-	}
-
-	var pkgs []Package
-	seen := make(map[string]bool)
-	for _, entry := range cfg.Packages {
-		if entry.Name == "" || entry.Name == "flutter" || entry.Name == "flutter_test" || strings.HasPrefix(entry.RootURI, "..") || strings.HasPrefix(entry.RootURI, ".") {
-			continue
-		}
-		// Extract version from .pub-cache URI e.g. ".../http-1.2.0" or ".../http-1.2.0/"
-		trimmedURI := strings.TrimRight(entry.RootURI, "/")
-		base := filepath.Base(trimmedURI)
-		prefix := entry.Name + "-"
-		ver := "latest"
-		if strings.HasPrefix(base, prefix) && len(base) > len(prefix) {
-			ver = base[len(prefix):]
-		}
-		p := Package{
-			Name:         entry.Name,
-			Version:      ver,
-			Ecosystem:    "Pub",
-			ManifestPath: configPath,
-		}
-		if !seen[p.Key()] {
-			seen[p.Key()] = true
-			pkgs = append(pkgs, p)
-		}
-	}
-	return pkgs
-}
-
-func isEditableInstall(directURLPath string) bool {
-	data, err := os.ReadFile(directURLPath)
-	if err != nil {
-		return false
-	}
-	var info struct {
-		DirInfo struct {
-			Editable bool `json:"editable"`
-		} `json:"dir_info"`
-	}
-	if err := json.Unmarshal(data, &info); err == nil {
-		return info.DirInfo.Editable
-	}
-	return false
-}
-
-func parsePythonMetadataFile(path string) (string, string) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", ""
-	}
-	defer f.Close()
-
-	var name, version string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			break
-		}
-		if strings.HasPrefix(line, "Name:") && name == "" {
-			name = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
-		} else if strings.HasPrefix(line, "Version:") && version == "" {
-			version = strings.TrimSpace(strings.TrimPrefix(line, "Version:"))
-		}
-		if name != "" && version != "" {
-			break
-		}
-	}
-	return name, version
-}
-
-func inspectNodeModules(nmDir string) []Package {
-	hiddenLock := filepath.Join(nmDir, ".package-lock.json")
-	if pkgs, err := parseNPMLock(hiddenLock); err == nil && len(pkgs) > 0 {
-		return pkgs
-	}
-
-	entries, err := os.ReadDir(nmDir)
-	if err != nil {
-		return nil
-	}
-
-	var pkgs []Package
-	seen := make(map[string]bool)
-
-	readPkgJSON := func(pkgJSONPath string) {
-		data, err := os.ReadFile(pkgJSONPath)
-		if err != nil {
-			return
-		}
-		var meta struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-		}
-		if err := json.Unmarshal(data, &meta); err == nil && meta.Name != "" && meta.Version != "" {
-			p := Package{
-				Name:         meta.Name,
-				Version:      meta.Version,
-				Ecosystem:    "npm",
-				ManifestPath: pkgJSONPath,
-			}
-			if !seen[p.Key()] {
-				seen[p.Key()] = true
-				pkgs = append(pkgs, p)
-			}
-		}
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-		if strings.HasPrefix(entry.Name(), "@") {
-			scopedDir := filepath.Join(nmDir, entry.Name())
-			subEntries, err := os.ReadDir(scopedDir)
-			if err != nil {
-				continue
-			}
-			for _, sub := range subEntries {
-				if sub.IsDir() {
-					pkgDir := filepath.Join(scopedDir, sub.Name())
-					readPkgJSON(filepath.Join(pkgDir, "package.json"))
-					pkgs = append(pkgs, inspectNodeModules(filepath.Join(pkgDir, "node_modules"))...)
-				}
-			}
-		} else {
-			pkgDir := filepath.Join(nmDir, entry.Name())
-			readPkgJSON(filepath.Join(pkgDir, "package.json"))
-			pkgs = append(pkgs, inspectNodeModules(filepath.Join(pkgDir, "node_modules"))...)
-		}
-	}
-
-	return pkgs
-}
 func parseByContent(filePath string) ([]Package, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -2419,7 +2022,13 @@ func parseByContent(filePath string) ([]Package, error) {
 		return parseGemfile(filePath, string(data))
 	}
 
-	if lowerBase == "mix.exs" || lowerBase == "mix.lock" {
+	if lowerBase == "pubspec.lock" {
+		return parsePubspecLock(filePath, string(data))
+	}
+	if lowerBase == "mix.lock" {
+		return parseMixLock(filePath, string(data))
+	}
+	if lowerBase == "mix.exs" {
 		return parseElixirMix(filePath, string(data))
 	}
 
@@ -2484,12 +2093,12 @@ func tryParseGenericJSON(filePath string, data []byte) ([]Package, bool) {
 	}
 	// vcpkg.json, project.assets.json, package_config.json, installed.json, or package.json
 	if _, ok := raw["libraries"]; ok {
-		if pkgs := inspectDotNetAssets(filePath); len(pkgs) > 0 {
+		if pkgs, err := inspectDotNetAssets(filePath); err == nil && len(pkgs) > 0 {
 			return pkgs, true
 		}
 	}
 	if _, ok := raw["configVersion"]; ok {
-		if pkgs := inspectDartPackageConfig(filePath); len(pkgs) > 0 {
+		if pkgs, err := inspectDartPackageConfig(filePath); err == nil && len(pkgs) > 0 {
 			return pkgs, true
 		}
 	}
@@ -2763,14 +2372,17 @@ func parseSetupPy(filePath, content string) ([]Package, error) {
 	seen := make(map[string]bool)
 
 	inRequires := false
+	depth := 0
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if strings.Contains(line, "install_requires") {
-			inRequires = true
+		if at := strings.Index(line, "install_requires"); at >= 0 {
+			line = line[at+len("install_requires"):]
+			inRequires = strings.Contains(line, "[")
+			depth = 0
 		}
 		if inRequires {
 			for _, m := range quotedStrRe.FindAllStringSubmatch(line, -1) {
@@ -2792,7 +2404,8 @@ func parseSetupPy(filePath, content string) ([]Package, error) {
 					}
 				}
 			}
-			if strings.Contains(line, "]") {
+			depth += unquotedBracketDelta(line)
+			if depth <= 0 {
 				inRequires = false
 			}
 		}
@@ -3173,7 +2786,10 @@ func parseCondaEnvironmentYAML(filePath, content string) []Package {
 			if spec == "pip:" || strings.HasPrefix(spec, "python=") || strings.HasPrefix(spec, "python>") {
 				continue
 			}
-			name, ver := parsePEP508Spec(strings.Replace(spec, "=", "==", 1))
+			if at := strings.IndexByte(spec, '='); at > 0 && !strings.ContainsAny(spec[at-1:at], ">!<~=") && (at+1 == len(spec) || spec[at+1] != '=') {
+				spec = spec[:at] + "==" + spec[at+1:]
+			}
+			name, ver := parsePEP508Spec(spec)
 			if name != "" && ver != "" {
 				p := Package{Name: name, Version: ver, Ecosystem: "PyPI", ManifestPath: filePath}
 				if !seen[p.Key()] {

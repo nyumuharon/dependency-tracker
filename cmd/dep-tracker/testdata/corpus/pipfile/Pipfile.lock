@@ -1,0 +1,12 @@
+{
+  "default": {
+    "requests": {
+      "version": "==2.32.3"
+    }
+  },
+  "develop": {
+    "pytest": {
+      "version": "==8.3.3"
+    }
+  }
+}

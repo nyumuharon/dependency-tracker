@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.8
+
+- Represent missing EPSS scores as unknown/null, preserve confirmed zero, and reject missing, duplicate, non-finite, and out-of-range scores.
+- Propagate installed-environment read and parse errors, retain recovered dependencies, and return incomplete-scan status instead of silent omissions.
+- Expand parser accuracy tests to 36 cases across all 12 ecosystems; fix Yarn Berry, pnpm v5, Dart/Elixir lockfiles, setup.py metadata leakage, and Conda equality handling.
+- Compare the shared npm fixture with npm and checksum-verified Syft 1.55.0 in CI.
+- Run native Linux/macOS race tests, builds and executable checks; enforce an 80% coverage floor.
+- Add cross-platform cache isolation, API/cache/report regression tests, and the MIT license in source and release archives.
+
 ## 1.0.7
 
 - Decode binary HTTP checksum responses in the Windows PowerShell installer before validating checksums.

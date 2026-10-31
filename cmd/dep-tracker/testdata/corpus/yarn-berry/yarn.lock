@@ -1,0 +1,10 @@
+__metadata:
+  version: 8
+"fixture-root@workspace:.":
+  version: 0.0.0-use.local
+"alpha@npm:^1.0.0":
+  version: 1.2.3
+  resolution: "alpha@npm:1.2.3"
+"@scope/tool@npm:^3.0.0":
+  version: 3.0.0
+  resolution: "@scope/tool@npm:3.0.0"

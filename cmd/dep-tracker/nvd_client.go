@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -26,15 +25,7 @@ var (
 	nvdCacheData map[string]nvdCacheEntry
 )
 
-func getNVDCachePath() string {
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		cacheDir = os.TempDir()
-	}
-	dir := filepath.Join(cacheDir, "dependency_risk_tracker")
-	_ = os.MkdirAll(dir, 0755)
-	return filepath.Join(dir, "nvd_cache.json")
-}
+func getNVDCachePath() string { return cacheFile("nvd_cache.json") }
 
 func loadNVDCache() {
 	nvdCacheOnce.Do(func() {

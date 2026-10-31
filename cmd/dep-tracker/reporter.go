@@ -166,7 +166,7 @@ func PrintReport(results []ScanResult) {
 						kevTag = " | ⚠️ CISA-KEV EXPLOITED"
 					}
 				}
-				fmt.Printf("      • %s [CVSS: %.1f | EPSS: %.5f%s]\n", idDisplay, v.CVSS, v.EPSS, kevTag)
+				fmt.Printf("      • %s [CVSS: %.1f | EPSS: %s%s]\n", idDisplay, v.CVSS, v.epssDisplay(), kevTag)
 				if v.Summary != "" {
 					fmt.Printf("        Summary : %s\n", v.Summary)
 				}

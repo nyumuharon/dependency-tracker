@@ -160,8 +160,8 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 					tags = append(tags, "cisa-kev")
 				}
 
-				helpText := fmt.Sprintf("Package: %s (%s)\nInstalled Version: %s\nCVSS: %.1f | EPSS: %.5f\n",
-					r.Pkg.Name, r.Pkg.Ecosystem, r.Pkg.Version, v.CVSS, v.EPSS)
+				helpText := fmt.Sprintf("Package: %s (%s)\nInstalled Version: %s\nCVSS: %.1f | EPSS: %s\n",
+					r.Pkg.Name, r.Pkg.Ecosystem, r.Pkg.Version, v.CVSS, v.epssDisplay())
 				if v.FixedVersion != "" {
 					helpText += fmt.Sprintf("Fixed release: %s (verify branch compatibility)\n", v.FixedVersion)
 				}
@@ -174,8 +174,8 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 					"- **Installed Version**: `%s`\n"+
 					"- **Vulnerability ID**: `%s`\n"+
 					"- **CVSS Base Score**: `%.1f`\n"+
-					"- **EPSS Exploit Probability**: `%.5f`\n",
-					r.Pkg.Name, r.Pkg.Ecosystem, r.Pkg.Version, ruleID, v.CVSS, v.EPSS)
+					"- **EPSS Exploit Probability**: `%s`\n",
+					r.Pkg.Name, r.Pkg.Ecosystem, r.Pkg.Version, ruleID, v.CVSS, v.epssDisplay())
 
 				if v.FixedVersion != "" {
 					helpMarkdown += fmt.Sprintf("- **Remediation**: Fixed release `%s` (verify branch compatibility)\n", v.FixedVersion)
@@ -221,8 +221,8 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 				resLevel = "note"
 			}
 
-			messageText := fmt.Sprintf("Dependency %s@%s contains %s (CVSS %.1f, EPSS %.5f).",
-				r.Pkg.Name, r.Pkg.Version, ruleID, v.CVSS, v.EPSS)
+			messageText := fmt.Sprintf("Dependency %s@%s contains %s (CVSS %.1f, EPSS %s).",
+				r.Pkg.Name, r.Pkg.Version, ruleID, v.CVSS, v.epssDisplay())
 			if v.FixedVersion != "" {
 				messageText += fmt.Sprintf(" Fixed release: %s (verify branch compatibility).", v.FixedVersion)
 			}

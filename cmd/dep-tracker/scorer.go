@@ -20,7 +20,11 @@ func Score(cvss float64, epss float64, hasCVE bool, isKEV bool) string {
 func ScoreVulnerabilities(vulns []Vulnerability) string {
 	tier := "NONE"
 	for _, v := range vulns {
-		candidate := Score(v.CVSS, v.EPSS, true, v.IsKEV)
+		epss := 0.0
+		if v.EPSSKnown {
+			epss = v.EPSS
+		}
+		candidate := Score(v.CVSS, epss, true, v.IsKEV)
 		if tierRank(candidate) < tierRank(tier) {
 			tier = candidate
 		}

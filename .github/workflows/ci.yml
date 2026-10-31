@@ -6,16 +6,29 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      REQUIRE_NPM_REFERENCE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -race -cover ./...
+      - name: Race tests, independent npm inventory comparison, and coverage
+        run: |
+          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" ./...
+          go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '/^total:/ { sub(/%/, "", $3); if ($3 < 80) { print "Coverage below 80%: " $3; exit 1 } }'
       - run: go vet ./...
-      - run: go build ./cmd/dep-tracker
-      - run: bash -n scripts/install.sh scripts/build-release.sh
+      - name: Build and run native executable
+        run: |
+          go build -o "$RUNNER_TEMP/dep-tracker" ./cmd/dep-tracker
+          "$RUNNER_TEMP/dep-tracker" version
+          "$RUNNER_TEMP/dep-tracker" --help
+      - run: bash -n scripts/install.sh scripts/build-release.sh scripts/test-install.sh
       - run: bash scripts/test-install.sh
   windows-installer:
     runs-on: windows-latest
@@ -24,3 +37,22 @@ jobs:
       - name: Test Windows installer and PATH configuration
         shell: pwsh
         run: ./scripts/test-install.ps1
+  reference-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Download pinned Syft reference and verify checksum
+        run: |
+          mkdir -p "$RUNNER_TEMP/syft"
+          cd "$RUNNER_TEMP/syft"
+          curl -fsSL --retry 3 -O https://github.com/anchore/syft/releases/download/v1.55.0/syft_1.55.0_linux_amd64.tar.gz
+          curl -fsSL --retry 3 -O https://github.com/anchore/syft/releases/download/v1.55.0/syft_1.55.0_checksums.txt
+          sha256sum -c syft_1.55.0_checksums.txt --ignore-missing
+          tar -xzf syft_1.55.0_linux_amd64.tar.gz syft
+      - name: Compare dependency inventory against Syft
+        env:
+          SYFT_BINARY: ${{ runner.temp }}/syft/syft
+        run: go test ./cmd/dep-tracker -run TestNpmInventoryAgainstSyft -v -count=1

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -30,15 +29,7 @@ var (
 	stalenessCacheData map[string]StalenessResult
 )
 
-func getStalenessCachePath() string {
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		cacheDir = os.TempDir()
-	}
-	dir := filepath.Join(cacheDir, "dependency_risk_tracker")
-	_ = os.MkdirAll(dir, 0755)
-	return filepath.Join(dir, "staleness_cache.json")
-}
+func getStalenessCachePath() string { return cacheFile("staleness_cache.json") }
 
 func loadStalenessCache() {
 	stalenessCacheOnce.Do(func() {

@@ -1,0 +1,8 @@
+name: fixture
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy=2.1.0
+  - pip:
+    - requests==2.32.3

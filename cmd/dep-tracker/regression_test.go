@@ -110,7 +110,7 @@ func TestGoManifestPreferredOverHistoricalChecksums(t *testing.T) {
 }
 
 func TestPriorityThresholdsUseTheSameVulnerability(t *testing.T) {
-	vulns := []Vulnerability{{CVSS: 9.8, EPSS: .01}, {CVSS: 3.0, EPSS: .9}}
+	vulns := []Vulnerability{{CVSS: 9.8, EPSS: .01, EPSSKnown: true}, {CVSS: 3.0, EPSS: .9, EPSSKnown: true}}
 	if got := ScoreVulnerabilities(vulns); got != "HIGH" {
 		t.Fatalf("got %s", got)
 	}
@@ -268,10 +268,10 @@ func TestExportsIncludeActualVersionAndIncompleteStatus(t *testing.T) {
 }
 
 func TestScanExitCodesAndJSON(t *testing.T) {
-	for _, mode := range []string{"clean", "osv-down", "unresolved", "critical", "export-failure", "epss-down", "kev-down", "nvd-down", "staleness-down"} {
+	for _, mode := range []string{"clean", "osv-down", "unresolved", "critical", "export-failure", "epss-down", "kev-down", "nvd-down", "staleness-down", "epss-missing", "epss-invalid", "epss-zero", "discovery-error"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
-			t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+			t.Setenv("DEP_TRACKER_CACHE_DIR", filepath.Join(root, "cache"))
 			stalenessCacheOnce = sync.Once{}
 			nvdCacheOnce = sync.Once{}
 			version := "1.0.0"
@@ -279,6 +279,10 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 				version = "^1.0.0"
 			}
 			manifest := writeFixture(t, root, "package.json", fmt.Sprintf(`{"dependencies":{"example":"%s"}}`, version))
+			if mode == "discovery-error" {
+				writeFixture(t, root, "node_modules/broken/package.json", "{bad")
+				manifest = root
+			}
 			mockHTTP(t, func(r *http.Request) (*http.Response, error) {
 				switch r.URL.Host {
 				case "registry.npmjs.org":
@@ -295,7 +299,7 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 					if mode == "osv-down" {
 						return response(503, `{}`), nil
 					}
-					vulnerable := mode == "critical" || mode == "epss-down" || mode == "nvd-down"
+					vulnerable := mode == "critical" || strings.HasPrefix(mode, "epss-") || mode == "nvd-down"
 					if r.URL.Path == "/v1/querybatch" {
 						if vulnerable {
 							return response(200, `{"results":[{"vulns":[{"id":"GHSA-example"}]}]}`), nil
@@ -308,6 +312,15 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 					}
 					return response(200, fmt.Sprintf(`{"vulns":[{"id":"GHSA-example","aliases":["CVE-2026-12345"],"severity":%s}]}`, severity)), nil
 				case "api.first.org":
+					if mode == "epss-missing" {
+						return response(200, `{"data":[]}`), nil
+					}
+					if mode == "epss-invalid" {
+						return response(200, `{"data":[{"cve":"CVE-2026-12345","epss":"NaN"}]}`), nil
+					}
+					if mode == "epss-zero" {
+						return response(200, `{"data":[{"cve":"CVE-2026-12345","epss":"0"}]}`), nil
+					}
 					if mode == "epss-down" {
 						return response(503, `{}`), nil
 					}
@@ -332,7 +345,7 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			os.Stdout = stdout
 			file.Close()
 			want := 2
-			if mode == "clean" {
+			if mode == "clean" || mode == "epss-zero" {
 				want = 0
 			}
 			if mode == "critical" {

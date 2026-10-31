@@ -1,0 +1,5 @@
+from setuptools import setup
+setup(name="fixture", install_requires=[
+ "requests>=2.0,<3",
+ "flask==3.0.0",
+])

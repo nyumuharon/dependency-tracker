@@ -99,7 +99,7 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 		for _, v := range r.Vulnerabilities {
 			comp.Properties = append(comp.Properties, SBOMProperty{
 				Name:  "vuln:cveID",
-				Value: fmt.Sprintf("%s (CVSS:%.1f EPSS:%.5f)", v.CVEID, v.CVSS, v.EPSS),
+				Value: fmt.Sprintf("%s (CVSS:%.1f EPSS:%s)", v.CVEID, v.CVSS, v.epssDisplay()),
 			})
 			if v.FixedVersion != "" {
 				comp.Properties = append(comp.Properties, SBOMProperty{

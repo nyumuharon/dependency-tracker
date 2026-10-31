@@ -1,0 +1,5 @@
+name: fixture
+dependencies:
+  http: ^1.2.2
+  flutter:
+    sdk: flutter

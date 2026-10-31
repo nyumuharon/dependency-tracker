@@ -113,6 +113,7 @@ func TestSARIFGeneration(t *testing.T) {
 					Summary:      "express vulnerable to XSS",
 					CVSS:         7.5,
 					EPSS:         0.005,
+					EPSSKnown:    true,
 					FixedVersion: "4.19.2",
 				},
 			},

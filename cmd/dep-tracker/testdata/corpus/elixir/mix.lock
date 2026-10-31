@@ -1,0 +1,4 @@
+%{
+  "jason": {:hex, :jason, "1.4.4", "hash", [:mix], [], "hexpm", "hash"},
+  "renamed": {:hex, :decimal, "2.1.1", "hash", [:mix], [], "hexpm", "hash"}
+}

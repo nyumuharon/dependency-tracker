@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,7 +34,7 @@ const (
 	maxStalenessConcurrency = 24
 )
 
-const appVersion = "1.0.7"
+const appVersion = "1.0.8"
 
 // cliOptions holds the command-line flags accepted by dep-tracker.
 type cliOptions struct {
@@ -195,11 +196,21 @@ func run(args []string) int {
 	// 1. Parse manifest or project directory
 	packages, err := ParsePath(targetPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
+		var discoveryErr *DiscoveryError
+		if !errors.As(err, &discoveryErr) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		if len(packages) == 0 {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 2
+		}
 	}
-	scanIncomplete := false
+	scanIncomplete := err != nil
 	var intelligenceErrors []string
+	if err != nil {
+		intelligenceErrors = append(intelligenceErrors, err.Error())
+	}
 	fmt.Fprintf(info, "Total unique dependencies to analyze: %d\n\n", len(packages))
 
 	// 2. Concurrently check staleness, fetch CISA KEV catalog, and batch-query OSV
@@ -363,9 +374,6 @@ func run(args []string) int {
 	nvdWg.Wait()
 	SaveNVDCache()
 	epssWg.Wait()
-	if epssErr != nil {
-		intelligenceErrors = append(intelligenceErrors, epssErr.Error())
-	}
 
 	// Assign fallback NVD CVSS and EPSS scores to vulnerabilities
 	for pkgName, vulns := range pkgVulns {
@@ -377,6 +385,7 @@ func run(args []string) int {
 			}
 			if score, ok := epssScores[v.CVEID]; ok {
 				pkgVulns[pkgName][i].EPSS = score
+				pkgVulns[pkgName][i].EPSSKnown = true
 			}
 		}
 	}
@@ -396,6 +405,9 @@ func run(args []string) int {
 			checkErrors = append(checkErrors, msg)
 		}
 		for _, v := range vulns {
+			if strings.HasPrefix(v.CVEID, "CVE-") && !v.EPSSKnown {
+				checkErrors = append(checkErrors, "EPSS unavailable for "+v.CVEID)
+			}
 			if msg := nvdErrors[v.CVEID]; msg != "" {
 				checkErrors = append(checkErrors, msg)
 			}

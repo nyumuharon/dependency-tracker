@@ -6,17 +6,21 @@ on:
       version:
         description: Expected latest release version (without v)
         required: true
-        default: '1.0.7'
+        default: '1.0.8'
 
 permissions:
   contents: read
 
 jobs:
-  linux-install:
-    runs-on: ubuntu-latest
+  unix-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install published Linux binary and check version
+      - name: Install published Unix binary and check version
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
           DEP_TRACKER_INSTALL_DIR: ${{ runner.temp }}/dep-tracker-live/bin

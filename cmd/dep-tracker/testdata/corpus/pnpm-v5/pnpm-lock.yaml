@@ -1,0 +1,6 @@
+lockfileVersion: 5.4
+packages:
+  /alpha/1.2.3:
+    resolution: {integrity: sha512-fixture}
+  /@scope/tool/3.0.0:
+    resolution: {integrity: sha512-fixture}

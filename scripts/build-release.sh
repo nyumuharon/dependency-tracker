@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 OUT="${1:-dist}"
 VERSION="$(sed -n 's/^const appVersion = "\([^"]*\)"/\1/p' cmd/dep-tracker/main.go)"
 mkdir -p "$OUT"
+cp LICENSE "$OUT/LICENSE"
 
 targets=(
   "linux   amd64 dep-tracker-linux-amd64"
@@ -31,16 +32,16 @@ cp "$OUT/dep-tracker-macos-arm64" "$OUT/dep-tracker-darwin-arm64"
 if command -v zip >/dev/null 2>&1; then
   echo "Compressing Windows archive (zip)..."
   cp "$OUT/dep-tracker-windows-amd64.exe" "$OUT/dep-tracker.exe"
-  (cd "$OUT" && zip -9 -q "dep-tracker-windows-amd64.zip" "dep-tracker.exe")
+  (cd "$OUT" && zip -9 -q "dep-tracker-windows-amd64.zip" "dep-tracker.exe" "LICENSE")
   rm -f "$OUT/dep-tracker.exe"
 fi
 
 if command -v tar >/dev/null 2>&1; then
   echo "Compressing Linux and macOS archives (tar.gz)..."
-  (cd "$OUT" && tar -czf "dep-tracker-linux-amd64.tar.gz" "dep-tracker-linux-amd64")
-  (cd "$OUT" && tar -czf "dep-tracker-linux-arm64.tar.gz" "dep-tracker-linux-arm64")
-  (cd "$OUT" && tar -czf "dep-tracker-macos-amd64.tar.gz" "dep-tracker-macos-amd64")
-  (cd "$OUT" && tar -czf "dep-tracker-macos-arm64.tar.gz" "dep-tracker-macos-arm64")
+  (cd "$OUT" && tar -czf "dep-tracker-linux-amd64.tar.gz" "dep-tracker-linux-amd64" "LICENSE")
+  (cd "$OUT" && tar -czf "dep-tracker-linux-arm64.tar.gz" "dep-tracker-linux-arm64" "LICENSE")
+  (cd "$OUT" && tar -czf "dep-tracker-macos-amd64.tar.gz" "dep-tracker-macos-amd64" "LICENSE")
+  (cd "$OUT" && tar -czf "dep-tracker-macos-arm64.tar.gz" "dep-tracker-macos-arm64" "LICENSE")
   (cd "$OUT" && cp "dep-tracker-macos-amd64.tar.gz" "dep-tracker-darwin-amd64.tar.gz")
   (cd "$OUT" && cp "dep-tracker-macos-arm64.tar.gz" "dep-tracker-darwin-arm64.tar.gz")
 fi

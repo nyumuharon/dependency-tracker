@@ -230,6 +230,10 @@ Automatically checks GitHub Releases for new versions and upgrades the `dep-trac
 
 ## Scan completeness and version confidence
 
+EPSS scores distinguish absence from a confirmed zero. Vulnerabilities include `EPSSKnown`; `EPSS` is `null` when no valid score is available. Missing, duplicate, non-finite, or out-of-range scores leave the affected package incomplete. Terminal, SBOM, and SARIF output label missing scores as unknown. Confirmed zero scores remain numeric zero.
+
+Unreadable or malformed installed metadata is reported with its path. Readable dependencies are retained, but the scan returns exit code `2`; when no dependencies can be recovered it exits with a discovery error instead of reporting a clean inventory.
+
 Each JSON package result includes `ScanStatus` (`complete` or `incomplete`), `CheckErrors`, and `Pkg.VersionSource` (`manifest`, `lockfile`, `installed`, `constraint`, or `import`). Lockfile and installed-environment decisions are scoped to each project directory, so sibling projects in a monorepo are resolved independently. Go directory scans prefer `go.mod` over `go.sum`, which can include historical dependency versions.
 
 Ranges such as `^1.2.3`, `>=2.0,<3`, Cargo's implicit caret ranges, and unpinned imports are preserved. They are resolved against local installed environments when available. Otherwise vulnerability checks for those packages remain incomplete; the scanner never substitutes the latest registry version. An exact manifest pin identifies a declared version, not proof that the package is installed.
@@ -250,6 +254,10 @@ Report parent directories are created automatically. SBOM and SARIF metadata use
 
 ## Testing
 
+The suite covers 36 curated parser cases across 12 ecosystems, compares a shared npm fixture against npm's inventory and pinned Syft 1.55.0, and exercises discovery errors, EPSS missing-data handling, registry responses, caches, and report exports. CI runs Go race tests, coverage, native builds, executable startup, and installer regression tests on Linux and macOS. Windows installer tests run separately. Each native Go CI run requires at least 80% statement coverage.
+
+See [accuracy validation](docs/accuracy-validation.md) for reproducible comparisons, benchmarks, and the limits of these checks. To isolate cached intelligence on any OS, set `DEP_TRACKER_CACHE_DIR` to a dedicated directory.
+
 Run the parser, scoring, mocked API/CLI failure, report export, checksum, and installer regression tests:
 ```bash
 go test -v -race -cover ./...
@@ -265,4 +273,4 @@ Pushes and pull requests run CI checks. The release workflow also runs the race-
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the [MIT License](LICENSE). Release archives include the license text.

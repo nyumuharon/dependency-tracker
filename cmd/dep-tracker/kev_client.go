@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -38,15 +37,7 @@ type KEVCatalog struct {
 }
 
 // getKEVCachePath returns the path to the local KEV cache file.
-func getKEVCachePath() string {
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		cacheDir = os.TempDir()
-	}
-	dir := filepath.Join(cacheDir, "dependency_risk_tracker")
-	_ = os.MkdirAll(dir, 0755)
-	return filepath.Join(dir, "cisa_kev.json")
-}
+func getKEVCachePath() string { return cacheFile("cisa_kev.json") }
 
 // FetchKEVCatalog downloads or loads the cached CISA KEV catalog.
 // It returns a map of CVE ID to KEVEntry.

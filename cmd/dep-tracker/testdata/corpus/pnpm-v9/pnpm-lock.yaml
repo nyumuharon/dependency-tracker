@@ -1,0 +1,8 @@
+lockfileVersion: '9.0'
+packages:
+  alpha@1.2.3:
+    resolution: {integrity: sha512-fixture}
+  '@scope/tool@3.0.0':
+    resolution: {integrity: sha512-fixture}
+snapshots:
+  alpha@1.2.3(@scope/peer@2.0.0): {}
