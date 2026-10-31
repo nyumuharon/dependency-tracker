@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -97,30 +96,23 @@ func TestCachePlatformPathAndUnavailableService(t *testing.T) {
 	}
 }
 
-func TestDeletedWorkingDirectoryContracts(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows locks the current directory")
-	}
+// Filesystem behavior for deleted working directories differs between macOS
+// and Linux. Test the failing service contract explicitly on every platform.
+func TestWorkingDirectoryServiceFailureContracts(t *testing.T) {
 	old, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	doomed := filepath.Join(root, "deleted")
-	if err := os.Mkdir(doomed, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(doomed); err != nil {
+	if err := os.Chdir(root); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Chdir(old)
-	if err := os.Remove(doomed); err != nil {
-		t.Fatal(err)
+	unavailable := errors.New("working directory unavailable")
+	if _, err := inspectNodeModulesWithPath(".", func(string) (string, error) { return "", unavailable }); !errors.Is(err, unavailable) {
+		t.Fatalf("directory failure was lost: %v", err)
 	}
-	if _, err := inspectNodeModules("."); err == nil {
-		t.Fatal("relative environment with no working directory accepted")
-	}
-	if err := GenerateSARIF([]ScanResult{{Pkg: Package{Name: "example", Version: "1.0.0", ManifestPath: "relative.json"}, Vulnerabilities: []Vulnerability{{CVEID: "CVE-2026-11111"}}}}, filepath.Join(root, "report.sarif")); err != nil {
+	if err := generateSARIFWithDirectory([]ScanResult{{Pkg: Package{Name: "example", Version: "1.0.0", ManifestPath: "relative.json"}, Vulnerabilities: []Vulnerability{{CVEID: "CVE-2026-11111"}}}}, filepath.Join(root, "report.sarif"), func() (string, error) { return "", unavailable }); err != nil {
 		t.Fatalf("report must tolerate an unavailable relative base: %v", err)
 	}
 }

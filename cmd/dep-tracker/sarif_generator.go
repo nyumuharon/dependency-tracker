@@ -91,6 +91,10 @@ type SARIFMessage struct {
 
 // GenerateSARIF creates a standard SARIF v2.1.0 document from scan results.
 func GenerateSARIF(results []ScanResult, outputPath string) error {
+	return generateSARIFWithDirectory(results, outputPath, os.Getwd)
+}
+
+func generateSARIFWithDirectory(results []ScanResult, outputPath string, workingDirectory func() (string, error)) error {
 	report := SARIFReport{
 		Schema:  "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
 		Version: "2.1.0",
@@ -125,7 +129,7 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 			manifestURI = "manifest"
 		}
 		// Convert to relative path if possible for GitHub Actions compatibility
-		if cwd, err := os.Getwd(); err == nil {
+		if cwd, err := workingDirectory(); err == nil {
 			if rel, err := filepath.Rel(cwd, manifestURI); err == nil && !strings.HasPrefix(rel, "..") {
 				manifestURI = rel
 			}

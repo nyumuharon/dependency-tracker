@@ -371,6 +371,10 @@ func inspectDartPackageConfig(path string) ([]Package, error) {
 }
 
 func inspectNodeModules(root string) ([]Package, error) {
+	return inspectNodeModulesWithPath(root, filepath.Abs)
+}
+
+func inspectNodeModulesWithPath(root string, absolutePath func(string) (string, error)) ([]Package, error) {
 	var pkgs []Package
 	seen := make(map[string]bool)
 	visited := make(map[string]bool)
@@ -383,7 +387,7 @@ func inspectNodeModules(root string) ([]Package, error) {
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", dir, err)
 		}
-		absolute, err := filepath.Abs(resolved)
+		absolute, err := absolutePath(resolved)
 		if err != nil {
 			return err
 		}
