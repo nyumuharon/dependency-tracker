@@ -1,5 +1,9 @@
 # Accuracy and reliability validation
 
+The test suite now executes every Go statement, including injected network and
+filesystem failures. The raw coverage profile is checked for zero-hit blocks,
+rather than accepting a rounded display percentage. No source files are excluded.
+
 The corpus in `cmd/dep-tracker/testdata/corpus` contains 36 authored fixtures with
 explicit expected package identities and versions. It covers npm lockfile v1/v3,
 Yarn Classic/Berry, pnpm v5/v9, Python lockfiles and manifests, Cargo, Go modules
@@ -38,8 +42,8 @@ installed metadata, partial inventories, installed npm symlink cycles, registry
 HTTP and parse failures, cache persistence, NVD severity fallback, and report
 confidence markers. All external intelligence requests in these tests are mocked.
 
-CI runs race-enabled tests on Linux and macOS and enforces at least 80% statement
-coverage per platform. Native binaries are built and executed on both platforms.
+CI runs race-enabled tests on Linux and macOS and requires every statement to execute (100% coverage)
+on each platform. Native binaries are built and executed on both platforms.
 Windows installer tests verify checksums, failure handling and PATH configuration.
 The published-release smoke workflow installs and runs actual release binaries on
 Linux, macOS and Windows. Coverage does not measure correctness; inventory
@@ -55,3 +59,7 @@ These benchmarks measure local manifest parsing and allocations only. They do
 not include network/API latency, and results depend on the host and filesystem
 cache. Compare results on the same machine and Go toolchain when investigating
 regressions; do not extrapolate them to full online scan throughput.
+
+See [real-world validation](real-world-validation.md) for pinned public clones and
+independent inventory comparisons. Local/private project reports remain outside
+the repository.

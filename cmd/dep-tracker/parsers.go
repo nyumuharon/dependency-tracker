@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -170,7 +171,7 @@ func FindManifests(rootDir string) ([]string, error) {
 
 	err := filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			name := d.Name()
@@ -230,9 +231,6 @@ func ParsePath(targetPath string) ([]Package, error) {
 	var allPkgs []Package
 	seen := make(map[string]bool)
 	for _, p := range pkgs {
-		if p.ManifestPath == "" {
-			p.ManifestPath = targetPath
-		}
 		key := p.Key()
 		if !seen[key] {
 			seen[key] = true
@@ -468,37 +466,9 @@ func parseNuGet(filePath string) ([]Package, error) {
 	if err != nil {
 		return nil, err
 	}
-	var pkgs []Package
-
-	if strings.HasSuffix(filePath, ".csproj") {
-		var proj csproj
-		if err := xml.Unmarshal(data, &proj); err != nil {
-			return nil, fmt.Errorf("invalid .csproj: %w", err)
-		}
-		for _, ig := range proj.ItemGroups {
-			for _, ref := range ig.PackageRefs {
-				if ref.Include == "" || ref.Version == "" {
-					continue
-				}
-				pkgs = append(pkgs, Package{
-					Name:      ref.Include,
-					Version:   ref.Version,
-					Ecosystem: "NuGet",
-				})
-			}
-		}
-	} else {
-		var cfg packagesConfig
-		if err := xml.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("invalid packages.config: %w", err)
-		}
-		for _, p := range cfg.Packages {
-			pkgs = append(pkgs, Package{
-				Name:      p.ID,
-				Version:   p.Version,
-				Ecosystem: "NuGet",
-			})
-		}
+	pkgs, err := parseDotNetXML(filePath, data)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", filePath, err)
 	}
 	return pkgs, nil
 }
@@ -910,19 +880,17 @@ func parsePnpmLock(filePath string) ([]Package, error) {
 			pkgSpec = strings.Trim(pkgSpec, `"' `)
 			pkgSpec = strings.TrimPrefix(pkgSpec, "/")
 			pkgSpec = strings.SplitN(pkgSpec, "(", 2)[0]
-			lastAt := strings.LastIndex(pkgSpec, "@")
-			if lastAt <= 0 {
-				if slash := strings.LastIndex(pkgSpec, "/"); slash > 0 {
-					pkgSpec = pkgSpec[:slash] + "@" + pkgSpec[slash+1:]
-					lastAt = slash
-				}
+			lastAt := strings.Index(pkgSpec, "@")
+			if strings.HasPrefix(pkgSpec, "@") {
+				lastAt = strings.Index(pkgSpec[1:], "@") + 1
+			}
+			if slash := strings.LastIndex(pkgSpec, "/"); slash > 0 && (!strings.HasPrefix(pkgSpec, "@") || strings.Contains(pkgSpec[:slash], "/")) {
+				pkgSpec = pkgSpec[:slash] + "@" + pkgSpec[slash+1:]
+				lastAt = slash
 			}
 			if lastAt > 0 {
 				name := pkgSpec[:lastAt]
 				version := pkgSpec[lastAt+1:]
-				if idx := strings.Index(version, "("); idx != -1 {
-					version = version[:idx]
-				}
 				if idx := strings.Index(version, "_"); idx != -1 {
 					version = version[:idx]
 				}
@@ -1019,6 +987,7 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 		}
 	}
 
+	var dependencyQuoteError error
 	extractQuotedStrings := func(s string) []string {
 		var res []string
 		for {
@@ -1030,6 +999,7 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 			rest := s[idx1+1:]
 			idx2 := strings.IndexByte(rest, quote)
 			if idx2 == -1 {
+				dependencyQuoteError = fmt.Errorf("unterminated dependency string in %s", filePath)
 				break
 			}
 			res = append(res, rest[:idx2])
@@ -1141,7 +1111,7 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 		}
 	}
 
-	return pkgs, scanner.Err()
+	return pkgs, errors.Join(scanner.Err(), dependencyQuoteError)
 }
 
 // ── Python Poetry lockfile (poetry.lock) ──────────────────────────────────────
@@ -1813,11 +1783,6 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 			case strings.HasSuffix(base, "pubspec.lock"):
 				lockDirs[dir]["Pub"] = true
 			}
-			for i := range pkgs {
-				if pkgs[i].ManifestPath == "" {
-					pkgs[i].ManifestPath = file
-				}
-			}
 			manifestPkgs = append(manifestPkgs, pkgs...)
 		}
 	}
@@ -2387,9 +2352,6 @@ func parseSetupPy(filePath, content string) ([]Package, error) {
 		if inRequires {
 			for _, m := range quotedStrRe.FindAllStringSubmatch(line, -1) {
 				spec := m[1]
-				if spec == "install_requires" {
-					continue
-				}
 				name, ver := parsePEP508Spec(spec)
 				if name != "" && ver != "" && !strings.ContainsAny(name, " /\\:") {
 					p := Package{

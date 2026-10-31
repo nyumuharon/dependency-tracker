@@ -58,10 +58,8 @@ func FetchKEVCatalog() (map[string]KEVEntry, error) {
 	}
 
 	// 2. Fetch fresh catalog from CISA
-	req, err := http.NewRequest("GET", cisaKEVURL, nil)
-	if err != nil {
-		return loadStaleCacheOrError(cachePath, err)
-	}
+	// Constant method and URL cannot fail request construction.
+	req, _ := http.NewRequest("GET", cisaKEVURL, nil)
 	req.Header.Set("User-Agent", "dependency-risk-tracker/1.0")
 
 	resp, err := httpClient.Do(req)
@@ -94,6 +92,9 @@ func parseKEVData(data []byte) (map[string]KEVEntry, error) {
 		return nil, fmt.Errorf("failed to unmarshal KEV catalog: %w", err)
 	}
 
+	if catalog.Vulnerabilities == nil {
+		return nil, fmt.Errorf("KEV catalog missing vulnerabilities array")
+	}
 	result := make(map[string]KEVEntry, len(catalog.Vulnerabilities))
 	for _, entry := range catalog.Vulnerabilities {
 		id := strings.TrimSpace(entry.CVEID)

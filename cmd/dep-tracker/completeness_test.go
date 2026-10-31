@@ -18,6 +18,7 @@ func TestEPSSMissingInvalidAndZero(t *testing.T) {
 		want       float64
 	}{
 		{"missing", `{"data":[]}`, false, 0},
+		{"unrequested", `{"data":[{"cve":"CVE-2026-99999","epss":"0.2"}]}`, false, 0},
 		{"zero", `{"data":[{"cve":"CVE-2026-11111","epss":"0"}]}`, true, 0},
 		{"positive", `{"data":[{"cve":"CVE-2026-11111","epss":"0.9"}]}`, true, .9},
 		{"invalid", `{"data":[{"cve":"CVE-2026-11111","epss":"bad"}]}`, false, 0},

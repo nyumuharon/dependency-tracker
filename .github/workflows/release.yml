@@ -28,7 +28,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -race ./...
+      - name: Require full statement coverage
+        run: |
+          go test -race -count=1 -coverprofile="$RUNNER_TEMP/coverage.out" ./...
+          bash scripts/check-coverage.sh "$RUNNER_TEMP/coverage.out"
       - run: go vet ./...
       - run: bash scripts/test-install.sh
       - name: Build and run native executable

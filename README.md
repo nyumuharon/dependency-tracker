@@ -254,9 +254,9 @@ Report parent directories are created automatically. SBOM and SARIF metadata use
 
 ## Testing
 
-The suite covers 36 curated parser cases across 12 ecosystems, compares a shared npm fixture against npm's inventory and pinned Syft 1.55.0, and exercises discovery errors, EPSS missing-data handling, registry responses, caches, and report exports. CI runs Go race tests, coverage, native builds, executable startup, and installer regression tests on Linux and macOS. Windows installer tests run separately. Each native Go CI run requires at least 80% statement coverage.
+The Go suite has 100% statement coverage and covers 36 curated parser cases across 12 ecosystems, compares a shared npm fixture against npm's inventory and pinned Syft 1.55.0, and exercises discovery errors, EPSS missing-data handling, registry responses, caches, and report exports. CI runs Go race tests, coverage, native builds, executable startup, and installer regression tests on Linux and macOS. Windows installer tests run separately. Each native Go CI run requires 100% statement coverage.
 
-See [accuracy validation](docs/accuracy-validation.md) for reproducible comparisons, benchmarks, and the limits of these checks. To isolate cached intelligence on any OS, set `DEP_TRACKER_CACHE_DIR` to a dedicated directory.
+See [real-world validation](docs/real-world-validation.md) for the public-project inventory comparisons and online scan outcomes. See [accuracy validation](docs/accuracy-validation.md) for reproducible comparisons, benchmarks, and the limits of these checks. To isolate cached intelligence on any OS, set `DEP_TRACKER_CACHE_DIR` to a dedicated directory.
 
 Run the parser, scoring, mocked API/CLI failure, report export, checksum, and installer regression tests:
 ```bash

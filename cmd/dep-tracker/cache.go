@@ -7,10 +7,12 @@ import (
 
 // DEP_TRACKER_CACHE_DIR provides explicit isolation for CI and offline testing
 // on every supported OS; normal installations retain their platform cache path.
+var platformCacheDir = os.UserCacheDir
+
 func cacheFile(name string) string {
 	dir := os.Getenv("DEP_TRACKER_CACHE_DIR")
 	if dir == "" {
-		base, err := os.UserCacheDir()
+		base, err := platformCacheDir()
 		if err != nil {
 			base = os.TempDir()
 		}

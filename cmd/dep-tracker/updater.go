@@ -180,7 +180,17 @@ func releaseChecksum(manifest, asset string) (string, error) {
 
 // downloadVerifiedUpdate returns a temporary binary only after verifying the
 // checksum. It never changes the installed executable and removes failed downloads.
-func downloadVerifiedUpdate(client *http.Client, releaseURL, binaryName, destinationDir string) (path string, err error) {
+type updateTempFile interface {
+	io.WriteCloser
+	Name() string
+}
+type updateFileCreator func(string, string) (updateTempFile, error)
+
+func downloadVerifiedUpdate(client *http.Client, releaseURL, binaryName, destinationDir string) (string, error) {
+	return downloadVerifiedUpdateTo(client, releaseURL, binaryName, destinationDir, func(dir, pattern string) (updateTempFile, error) { return os.CreateTemp(dir, pattern) })
+}
+
+func downloadVerifiedUpdateTo(client *http.Client, releaseURL, binaryName, destinationDir string, create updateFileCreator) (path string, err error) {
 	checksumResp, err := client.Get(releaseURL + "/SHA256SUMS.txt")
 	if err != nil {
 		return "", fmt.Errorf("download checksums: %w", err)
@@ -205,7 +215,7 @@ func downloadVerifiedUpdate(client *http.Client, releaseURL, binaryName, destina
 	if binResp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("binary download returned HTTP %d", binResp.StatusCode)
 	}
-	tmpFile, err := os.CreateTemp(destinationDir, ".dep-tracker-update-*.tmp")
+	tmpFile, err := create(destinationDir, ".dep-tracker-update-*.tmp")
 	if err != nil {
 		return "", fmt.Errorf("create update file in %s: %w", destinationDir, err)
 	}

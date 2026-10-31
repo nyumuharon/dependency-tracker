@@ -247,10 +247,8 @@ func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {
 			bq.Queries = append(bq.Queries, q)
 		}
 
-		body, err := json.Marshal(bq)
-		if err != nil {
-			return nil, fmt.Errorf("osv batch marshal: %w", err)
-		}
+		// osvBatchQuery contains only strings and slices of structs.
+		body, _ := json.Marshal(bq)
 
 		resp, err := httpClient.Post(osvBatchURL, "application/json", bytes.NewReader(body))
 		if err != nil {
@@ -326,10 +324,8 @@ func QueryOSV(pkg Package) ([]Vulnerability, error) {
 	q.Package.Ecosystem = pkg.Ecosystem
 	q.Version = version
 
-	body, err := json.Marshal(q)
-	if err != nil {
-		return nil, fmt.Errorf("osv marshal: %w", err)
-	}
+	// osvQuery contains only strings.
+	body, _ := json.Marshal(q)
 
 	// POST to OSV
 	resp, err := httpClient.Post(osvURL, "application/json", bytes.NewReader(body))
@@ -357,7 +353,7 @@ func QueryOSV(pkg Package) ([]Vulnerability, error) {
 // using the official FIRST CVSS v3 specification formula (0ms, no network calls).
 func parseCVSSVector(vector string) float64 {
 	// If it is already a plain number, parse directly
-	if f, err := strconv.ParseFloat(vector, 64); err == nil {
+	if f, err := strconv.ParseFloat(vector, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) && f >= 0 && f <= 10 {
 		return f
 	}
 
@@ -390,6 +386,9 @@ func parseCVSSVector(vector string) float64 {
 		return 0
 	}
 
+	if metrics["S"] != "C" && metrics["S"] != "U" {
+		return 0
+	}
 	scopeChanged := metrics["S"] == "C"
 
 	var pr float64

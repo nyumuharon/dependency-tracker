@@ -20,8 +20,8 @@ jobs:
           go-version-file: go.mod
       - name: Race tests, independent npm inventory comparison, and coverage
         run: |
-          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" ./...
-          go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '/^total:/ { sub(/%/, "", $3); if ($3 < 80) { print "Coverage below 80%: " $3; exit 1 } }'
+          go test -race -count=1 -coverprofile="$RUNNER_TEMP/coverage.out" ./...
+          bash scripts/check-coverage.sh "$RUNNER_TEMP/coverage.out"
       - run: go vet ./...
       - name: Build and run native executable
         run: |

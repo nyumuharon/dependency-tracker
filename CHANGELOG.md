@@ -6,7 +6,9 @@
 - Propagate installed-environment read and parse errors, retain recovered dependencies, and return incomplete-scan status instead of silent omissions.
 - Expand parser accuracy tests to 36 cases across all 12 ecosystems; fix Yarn Berry, pnpm v5, Dart/Elixir lockfiles, setup.py metadata leakage, and Conda equality handling.
 - Compare the shared npm fixture with npm and checksum-verified Syft 1.55.0 in CI.
-- Run native Linux/macOS race tests, builds and executable checks; enforce an 80% coverage floor.
+- Run native Linux/macOS race tests, builds and executable checks; require exact 100% statement coverage with no excluded source files.
+- Validate public Axios, Gin, bat and Poetry inventories against Syft, and exercise full online scans of public and existing local projects.
+- Cover interrupted update downloads, disk/permission errors, process exit behavior, malformed manifests and every report tier; reject invalid CVSS numbers and missing catalog/date metadata.
 - Add cross-platform cache isolation, API/cache/report regression tests, and the MIT license in source and release archives.
 
 ## 1.0.7

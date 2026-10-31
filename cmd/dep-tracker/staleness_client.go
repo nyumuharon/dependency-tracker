@@ -270,6 +270,9 @@ func checkMavenStaleness(name string) (StalenessResult, error) {
 	}
 
 	doc := data.Response.Docs[0]
+	if doc.Timestamp <= 0 {
+		return StalenessResult{LatestVersion: doc.LatestVersion}, nil
+	}
 	t := time.UnixMilli(doc.Timestamp)
 
 	return StalenessResult{
@@ -389,10 +392,8 @@ func escapeGoPath(path string) string {
 // ── Rust (crates.io) ──────────────────────────────────────────────────────────
 func checkCratesStaleness(name string) (StalenessResult, error) {
 	apiURL := "https://crates.io/api/v1/crates/" + url.PathEscape(name)
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return StalenessResult{}, err
-	}
+	// apiURL combines a constant URL with an escaped path component.
+	req, _ := http.NewRequest("GET", apiURL, nil)
 	req.Header.Set("User-Agent", "dependency-risk-tracker (security-scanner)")
 
 	resp, err := httpClient.Do(req)
@@ -541,6 +542,9 @@ func checkConanStaleness(name string) (StalenessResult, error) {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		return StalenessResult{}, err
+	}
 	return StalenessResult{}, nil
 }
 

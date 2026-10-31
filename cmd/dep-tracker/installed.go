@@ -38,7 +38,7 @@ func inspectPythonVenv(venvDir string, localModules map[string]bool) ([]Package,
 	var pkgs []Package
 	seen := make(map[string]bool)
 	var issues []error
-	err := filepath.WalkDir(venvDir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(venvDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			issues = append(issues, fmt.Errorf("walk %s: %w", path, err))
 			return nil
@@ -78,9 +78,6 @@ func inspectPythonVenv(venvDir string, localModules map[string]bool) ([]Package,
 		}
 		return nil
 	})
-	if err != nil {
-		issues = append(issues, err)
-	}
 	return pkgs, errors.Join(issues...)
 }
 

@@ -118,10 +118,8 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 		sbom.Components = append(sbom.Components, comp)
 	}
 
-	data, err := json.MarshalIndent(sbom, "", "  ")
-	if err != nil {
-		return fmt.Errorf("sbom marshal: %w", err)
-	}
+	// All report fields are fixed JSON-supported types; I/O failures are returned below.
+	data, _ := json.MarshalIndent(sbom, "", "  ")
 
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		return err

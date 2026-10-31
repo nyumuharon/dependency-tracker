@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func writeFixture(t *testing.T, root, name, content string) string {
@@ -175,6 +176,12 @@ func TestOSVBatchRejectsMissingResultsAndDetailFailures(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			mockHTTP(t, func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/v1/querybatch" {
+					if mode == "batch-fallback" {
+						return response(503, `{}`), nil
+					}
+					if mode == "multiple-versions" {
+						return response(200, `{"results":[{},{}]}`), nil
+					}
 					if mode == "missing" {
 						return response(200, `{"results":[]}`), nil
 					}
@@ -268,7 +275,7 @@ func TestExportsIncludeActualVersionAndIncompleteStatus(t *testing.T) {
 }
 
 func TestScanExitCodesAndJSON(t *testing.T) {
-	for _, mode := range []string{"clean", "osv-down", "unresolved", "critical", "export-failure", "epss-down", "kev-down", "nvd-down", "staleness-down", "epss-missing", "epss-invalid", "epss-zero", "discovery-error"} {
+	for _, mode := range []string{"clean", "osv-down", "unresolved", "critical", "export-failure", "epss-down", "kev-down", "nvd-down", "staleness-down", "epss-missing", "epss-invalid", "epss-zero", "discovery-error", "kev-active", "kev-ransomware", "nvd-score", "nvd-empty", "text-report", "sarif-failure", "json-output-failure", "stale-only", "stale-filtered-clean", "empty-project", "discovery-empty", "batch-fallback", "multiple-versions"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			t.Setenv("DEP_TRACKER_CACHE_DIR", filepath.Join(root, "cache"))
@@ -279,6 +286,17 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 				version = "^1.0.0"
 			}
 			manifest := writeFixture(t, root, "package.json", fmt.Sprintf(`{"dependencies":{"example":"%s"}}`, version))
+			if mode == "empty-project" {
+				manifest = writeFixture(t, root, "package.json", `{}`)
+			}
+			if mode == "discovery-empty" {
+				os.Remove(manifest)
+				writeFixture(t, root, "node_modules/broken/package.json", "{bad")
+				manifest = root
+			}
+			if mode == "multiple-versions" {
+				manifest = writeFixture(t, root, "package-lock.json", `{"lockfileVersion":3,"packages":{"node_modules/example":{"version":"1.0.0"},"node_modules/a/node_modules/example":{"version":"2.0.0"}}}`)
+			}
 			if mode == "discovery-error" {
 				writeFixture(t, root, "node_modules/broken/package.json", "{bad")
 				manifest = root
@@ -289,26 +307,45 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 					if mode == "staleness-down" {
 						return response(503, `{}`), nil
 					}
-					return response(200, `{"dist-tags":{"latest":"2.0.0"},"time":{"2.0.0":"2026-10-01T00:00:00Z"}}`), nil
+					if mode == "stale-only" {
+						return response(200, `{"dist-tags":{"latest":"2.0.0"},"time":{"2.0.0":"2020-01-01T00:00:00Z"}}`), nil
+					}
+					return response(200, fmt.Sprintf(`{"dist-tags":{"latest":"2.0.0"},"time":{"2.0.0":%q}}`, time.Now().UTC().Format(time.RFC3339))), nil
 				case "www.cisa.gov":
 					if mode == "kev-down" {
 						return response(503, `{}`), nil
+					}
+					if mode == "kev-active" || mode == "kev-ransomware" {
+						ransomware := "Unknown"
+						if mode == "kev-ransomware" {
+							ransomware = "Known"
+						}
+						return response(200, fmt.Sprintf(`{"vulnerabilities":[{"cveID":"CVE-2026-12345","knownRansomwareCampaignUse":%q}]}`, ransomware)), nil
 					}
 					return response(200, `{"vulnerabilities":[]}`), nil
 				case "api.osv.dev":
 					if mode == "osv-down" {
 						return response(503, `{}`), nil
 					}
-					vulnerable := mode == "critical" || strings.HasPrefix(mode, "epss-") || mode == "nvd-down"
+					vulnerable := mode == "critical" || strings.HasPrefix(mode, "epss-") || strings.HasPrefix(mode, "nvd-") || mode == "kev-active" || mode == "kev-ransomware"
 					if r.URL.Path == "/v1/querybatch" {
+						if mode == "batch-fallback" {
+							return response(503, `{}`), nil
+						}
+						if mode == "multiple-versions" {
+							return response(200, `{"results":[{},{}]}`), nil
+						}
 						if vulnerable {
 							return response(200, `{"results":[{"vulns":[{"id":"GHSA-example"}]}]}`), nil
 						}
 						return response(200, `{"results":[{}]}`), nil
 					}
 					severity := `[{"type":"CVSS_V3","score":"9.8"}]`
-					if mode == "nvd-down" {
+					if strings.HasPrefix(mode, "nvd-") {
 						severity = `[]`
+					}
+					if mode == "kev-active" || mode == "kev-ransomware" {
+						severity = `[{"type":"CVSS_V3","score":"3.0"}]`
 					}
 					return response(200, fmt.Sprintf(`{"vulns":[{"id":"GHSA-example","aliases":["CVE-2026-12345"],"severity":%s}]}`, severity)), nil
 				case "api.first.org":
@@ -318,7 +355,7 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 					if mode == "epss-invalid" {
 						return response(200, `{"data":[{"cve":"CVE-2026-12345","epss":"NaN"}]}`), nil
 					}
-					if mode == "epss-zero" {
+					if mode == "epss-zero" || mode == "kev-active" || mode == "kev-ransomware" {
 						return response(200, `{"data":[{"cve":"CVE-2026-12345","epss":"0"}]}`), nil
 					}
 					if mode == "epss-down" {
@@ -326,12 +363,21 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 					}
 					return response(200, `{"data":[{"cve":"CVE-2026-12345","epss":"0.9"}]}`), nil
 				case "services.nvd.nist.gov":
+					if mode == "nvd-score" {
+						return response(200, `{"vulnerabilities":[{"cve":{"metrics":{"cvssMetricV31":[{"cvssData":{"baseScore":7.5}}]}}}]}`), nil
+					}
+					if mode == "nvd-empty" {
+						return response(200, `{"vulnerabilities":[]}`), nil
+					}
 					return response(503, `{}`), nil
 				}
 				return nil, fmt.Errorf("unexpected request: %s", r.URL)
 			})
 			sarif := filepath.Join(root, "reports", "results.sarif")
 			sbom := filepath.Join(root, "reports", "sbom.json")
+			if mode == "sarif-failure" {
+				sarif = writeFixture(t, root, "blocked", "file") + "/results.sarif"
+			}
 			if mode == "export-failure" {
 				sbom = writeFixture(t, root, "blocked", "file") + "/sbom.json"
 			}
@@ -341,20 +387,39 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 				t.Fatal(err)
 			}
 			os.Stdout = file
-			code := run([]string{"scan", manifest, "--json", "--sbom", sbom, "--sarif", sarif})
+			args := []string{"scan", manifest, "--sbom", sbom, "--sarif", sarif}
+			if mode != "text-report" {
+				args = append(args, "--json")
+			}
+			if mode == "stale-only" || mode == "stale-filtered-clean" {
+				args = append(args, "--stale-only")
+			}
+			if mode == "json-output-failure" {
+				file.Close()
+			}
+			code := run(args)
 			os.Stdout = stdout
 			file.Close()
 			want := 2
-			if mode == "clean" || mode == "epss-zero" {
+			if mode == "clean" || mode == "epss-zero" || mode == "text-report" || mode == "stale-only" || mode == "stale-filtered-clean" || mode == "empty-project" || mode == "multiple-versions" {
 				want = 0
 			}
-			if mode == "critical" {
+			if mode == "critical" || mode == "kev-active" || mode == "kev-ransomware" || mode == "nvd-score" || mode == "batch-fallback" {
 				want = 1
 			}
 			if code != want {
 				t.Errorf("exit %d, want %d", code, want)
 			}
+			if mode == "discovery-empty" || mode == "json-output-failure" {
+				return
+			}
 			data, err := os.ReadFile(file.Name())
+			if mode == "text-report" {
+				if !strings.Contains(string(data), "EXECUTIVE SUMMARY") {
+					t.Fatal("missing text report")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -362,7 +427,14 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			if err := json.Unmarshal(data, &results); err != nil {
 				t.Fatalf("stdout must be JSON: %s: %v", data, err)
 			}
-			if len(results) != 1 {
+			expectedResults := 1
+			if mode == "stale-filtered-clean" || mode == "empty-project" {
+				expectedResults = 0
+			}
+			if mode == "multiple-versions" {
+				expectedResults = 2
+			}
+			if len(results) != expectedResults {
 				t.Fatalf("got %+v", results)
 			}
 			if mode == "osv-down" || mode == "unresolved" {

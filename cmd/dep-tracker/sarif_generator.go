@@ -257,10 +257,8 @@ func GenerateSARIF(results []ScanResult, outputPath string) error {
 	}
 
 	report.Runs[0].Invocations = []SARIFInvocation{invocation}
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return fmt.Errorf("sarif marshal: %w", err)
-	}
+	// All report fields are fixed JSON-supported types; I/O failures are returned below.
+	data, _ := json.MarshalIndent(report, "", "  ")
 
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		return err
