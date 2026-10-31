@@ -20,45 +20,42 @@ type githubRelease struct {
 	Body    string `json:"body"`
 }
 
-func parseSemver(v string) (int, int, int) {
-	v = strings.TrimPrefix(v, "v")
-	parts := strings.Split(v, ".")
-	var major, minor, patch int
-	if len(parts) >= 1 {
-		fmt.Sscanf(parts[0], "%d", &major)
-	}
-	if len(parts) >= 2 {
-		fmt.Sscanf(parts[1], "%d", &minor)
-	}
-	if len(parts) >= 3 {
-		fmt.Sscanf(parts[2], "%d", &patch)
-	}
-	return major, minor, patch
+// updaterOptions keeps platform and filesystem boundaries explicit so failure
+// handling can be tested without replacing the running test executable.
+type updaterOptions struct {
+	apiClient, downloadClient           *http.Client
+	apiURL, releaseBase, platform, arch string
+	executable                          func() (string, error)
+	resolve                             func(string) (string, error)
+	fs                                  updateFS
+}
+type updateFS struct {
+	rename func(string, string) error
+	remove func(string) error
+	chmod  func(string, os.FileMode) error
 }
 
-func isNewer(latest, current string) bool {
-	lMaj, lMin, lPatch := parseSemver(latest)
-	cMaj, cMin, cPatch := parseSemver(current)
-	if lMaj != cMaj {
-		return lMaj > cMaj
+func defaultUpdater() updaterOptions {
+	return updaterOptions{
+		apiClient: &http.Client{Timeout: 15 * time.Second}, downloadClient: &http.Client{Timeout: 10 * time.Minute},
+		apiURL:      "https://api.github.com/repos/nyumuharon/dependency-tracker/releases/latest",
+		releaseBase: "https://github.com/nyumuharon/dependency-tracker/releases/download",
+		platform:    runtime.GOOS, arch: runtime.GOARCH, executable: os.Executable, resolve: filepath.EvalSymlinks,
+		fs: updateFS{rename: os.Rename, remove: os.Remove, chmod: os.Chmod},
 	}
-	if lMin != cMin {
-		return lMin > cMin
-	}
-	return lPatch > cPatch
 }
+func runUpdate() error { return runUpdateWith(defaultUpdater()) }
 
-func runUpdate() error {
+func runUpdateWith(opts updaterOptions) error {
 	fmt.Printf("Checking for updates (current version: v%s)...\n", appVersion)
 
-	apiClient := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/nyumuharon/dependency-tracker/releases/latest", nil)
+	req, err := http.NewRequest("GET", opts.apiURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create update request: %w", err)
 	}
 	req.Header.Set("User-Agent", "dep-tracker-updater")
 
-	resp, err := apiClient.Do(req)
+	resp, err := opts.apiClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("unable to reach GitHub release API: %w", err)
 	}
@@ -75,7 +72,11 @@ func runUpdate() error {
 
 	latestTag := strings.TrimSpace(rel.TagName)
 
-	if !isNewer(latestTag, appVersion) {
+	comparison, valid := compareVersions(latestTag, appVersion, "Go")
+	if !valid {
+		return fmt.Errorf("invalid release version %q", latestTag)
+	}
+	if comparison <= 0 {
 		fmt.Printf("✓ dep-tracker is already up to date (v%s).\n", appVersion)
 		return nil
 	}
@@ -83,8 +84,8 @@ func runUpdate() error {
 	fmt.Printf("Found newer version: %s (installed: v%s)\n", latestTag, appVersion)
 
 	// Determine binary name for current platform
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
+	goos := opts.platform
+	goarch := opts.arch
 
 	var binaryName string
 	switch goos {
@@ -98,49 +99,48 @@ func runUpdate() error {
 		return fmt.Errorf("self-update is not supported on %s/%s", goos, goarch)
 	}
 
-	releaseURL := fmt.Sprintf("https://github.com/nyumuharon/dependency-tracker/releases/download/%s", latestTag)
+	releaseURL := opts.releaseBase + "/" + latestTag
 	fmt.Printf("Downloading %s from %s...\n", binaryName, latestTag)
 
-	exePath, err := os.Executable()
+	exePath, err := opts.executable()
 	if err != nil {
 		return fmt.Errorf("cannot find current executable path: %w", err)
 	}
-	exePath, err = filepath.EvalSymlinks(exePath)
+	exePath, err = opts.resolve(exePath)
 	if err != nil {
 		return fmt.Errorf("cannot resolve executable path: %w", err)
 	}
-	downloadClient := &http.Client{Timeout: 10 * time.Minute}
-	tmpPath, err := downloadVerifiedUpdate(downloadClient, releaseURL, binaryName, filepath.Dir(exePath))
+	tmpPath, err := downloadVerifiedUpdate(opts.downloadClient, releaseURL, binaryName, filepath.Dir(exePath))
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpPath)
+	defer opts.fs.remove(tmpPath)
 
 	// Replace the current executable
 	if goos == "windows" {
 		oldPath := exePath + ".old"
-		_ = os.Remove(oldPath) // Remove any leftover previous backup
+		_ = opts.fs.remove(oldPath) // Remove any leftover previous backup
 
-		if err := os.Rename(exePath, oldPath); err != nil {
-			os.Remove(tmpPath)
+		if err := opts.fs.rename(exePath, oldPath); err != nil {
+			opts.fs.remove(tmpPath)
 			return fmt.Errorf("unable to replace executable: %w", err)
 		}
 
-		if err := os.Rename(tmpPath, exePath); err != nil {
-			_ = os.Rename(oldPath, exePath) // Rollback if new copy failed
-			os.Remove(tmpPath)
+		if err := opts.fs.rename(tmpPath, exePath); err != nil {
+			_ = opts.fs.rename(oldPath, exePath) // Rollback if new copy failed
+			opts.fs.remove(tmpPath)
 			return fmt.Errorf("unable to install new executable: %w", err)
 		}
 
-		_ = os.Remove(oldPath) // Clean up old file if allowed
+		_ = opts.fs.remove(oldPath) // Clean up old file if allowed
 	} else {
 		// Linux & macOS atomic swap
-		if err := os.Chmod(tmpPath, 0755); err != nil {
-			os.Remove(tmpPath)
+		if err := opts.fs.chmod(tmpPath, 0755); err != nil {
+			opts.fs.remove(tmpPath)
 			return fmt.Errorf("failed to mark binary as executable: %w", err)
 		}
-		if err := os.Rename(tmpPath, exePath); err != nil {
-			os.Remove(tmpPath)
+		if err := opts.fs.rename(tmpPath, exePath); err != nil {
+			opts.fs.remove(tmpPath)
 			if os.IsPermission(err) {
 				return fmt.Errorf("permission denied updating %s (try running: sudo dep-tracker update)", exePath)
 			}

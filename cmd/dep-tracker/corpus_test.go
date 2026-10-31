@@ -138,7 +138,7 @@ func TestNpmInventoryAgainstSyft(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(syft, "scan", "dir:"+root, "-o", "syft-json", "--quiet")
-	cmd.Env = append(os.Environ(), "SYFT_CHECK_FOR_APP_UPDATE=false")
+	cmd.Env = append(os.Environ(), "SYFT_CHECK_FOR_APP_UPDATE=false", "SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES=true")
 	output, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("Syft reference failed: %v: %s", err, output)

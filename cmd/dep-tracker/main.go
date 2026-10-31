@@ -42,6 +42,7 @@ type cliOptions struct {
 	sarifPath string
 	jsonOut   bool
 	staleOnly bool
+	action    string
 }
 
 const helpText = `Dependency Risk Tracker v%[1]s
@@ -116,11 +117,11 @@ func parseArgs(args []string) (cliOptions, string, error) {
 	if len(args) > 0 {
 		switch args[0] {
 		case "help":
-			printUsage(os.Stdout)
-			os.Exit(0)
+			opts.action = "help"
+			return opts, "", nil
 		case "version":
-			fmt.Println("dep-tracker " + appVersion)
-			os.Exit(0)
+			opts.action = "version"
+			return opts, "", nil
 		case "scan":
 			args = args[1:]
 		}
@@ -130,11 +131,11 @@ func parseArgs(args []string) (cliOptions, string, error) {
 		a := args[i]
 		switch {
 		case a == "-h" || a == "--help":
-			printUsage(os.Stdout)
-			os.Exit(0)
+			opts.action = "help"
+			return opts, "", nil
 		case a == "--version" || a == "-v":
-			fmt.Println("dep-tracker " + appVersion)
-			os.Exit(0)
+			opts.action = "version"
+			return opts, "", nil
 		case a == "--json":
 			opts.jsonOut = true
 		case a == "--stale-only":
@@ -165,7 +166,9 @@ func parseArgs(args []string) (cliOptions, string, error) {
 	return opts, positional[0], nil
 }
 
-func main() { os.Exit(run(os.Args[1:])) }
+var exitProcess = os.Exit
+
+func main() { exitProcess(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
@@ -185,6 +188,15 @@ func run(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
+	}
+
+	if opts.action == "help" {
+		printUsage(os.Stdout)
+		return 0
+	}
+	if opts.action == "version" {
+		fmt.Println("dep-tracker " + appVersion)
+		return 0
 	}
 
 	// In --json mode, progress messages go to stderr so stdout stays valid JSON.
