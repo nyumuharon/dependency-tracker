@@ -2976,6 +2976,7 @@ func extractPythonImports(filePath string, localModules map[string]bool) []strin
 			imports = append(imports, topMod)
 		}
 	}
+	_ = scanner.Err()
 	return imports
 }
 
@@ -3048,6 +3049,7 @@ func extractGoImports(filePath string, localModules map[string]bool) []string {
 			}
 		}
 	}
+	_ = scanner.Err()
 	return imports
 }
 
@@ -3103,6 +3105,7 @@ func extractRustImports(filePath string, localModules map[string]bool) []string 
 		}
 		imports = append(imports, crateName)
 	}
+	_ = scanner.Err()
 	return imports
 }
 
@@ -3212,6 +3215,7 @@ func extractCPPIncludes(filePath string, localModules map[string]bool) []string 
 			includes = append(includes, strings.ToLower(top))
 		}
 	}
+	_ = scanner.Err()
 	return includes
 }
 
@@ -3278,6 +3282,7 @@ func extractJVMImports(filePath string) []string {
 			}
 		}
 	}
+	_ = scanner.Err()
 	return imports
 }
 
@@ -3312,6 +3317,7 @@ func extractDotNetUsings(filePath string, localModules map[string]bool) []string
 			usings = append(usings, parts[0])
 		}
 	}
+	_ = scanner.Err()
 	return usings
 }
 
@@ -3337,6 +3343,7 @@ func extractPHPUses(filePath string, localModules map[string]bool) []string {
 		}
 		uses = append(uses, vendor+"/"+pkg)
 	}
+	_ = scanner.Err()
 	return uses
 }
 
@@ -3384,6 +3391,7 @@ func extractRubyRequires(filePath string, localModules map[string]bool) []string
 		}
 		reqs = append(reqs, gem)
 	}
+	_ = scanner.Err()
 	return reqs
 }
 
@@ -3408,5 +3416,6 @@ func extractDartImports(filePath string, localModules map[string]bool) []string 
 		}
 		imports = append(imports, pkg)
 	}
+	_ = scanner.Err()
 	return imports
 }
