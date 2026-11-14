@@ -25,6 +25,9 @@ type githubRelease struct {
 type updaterOptions struct {
 	apiClient, downloadClient           *http.Client
 	apiURL, releaseBase, platform, arch string
+	// version selects a specific release ("1.0.8"), older or newer; empty
+	// means the latest release, installed only when it is newer.
+	version string
 	executable                          func() (string, error)
 	resolve                             func(string) (string, error)
 	fs                                  updateFS
@@ -44,12 +47,26 @@ func defaultUpdater() updaterOptions {
 		fs: updateFS{rename: os.Rename, remove: os.Remove, chmod: os.Chmod},
 	}
 }
-func runUpdate() error { return runUpdateWith(defaultUpdater()) }
+func runUpdate(version string) error {
+	opts := defaultUpdater()
+	opts.version = version
+	return runUpdateWith(opts)
+}
 
 func runUpdateWith(opts updaterOptions) error {
-	fmt.Printf("Checking for updates (current version: v%s)...\n", appVersion)
+	target := strings.TrimPrefix(strings.TrimSpace(opts.version), "v")
+	apiURL := opts.apiURL
+	if target != "" {
+		if _, valid := compareVersions(target, appVersion, "Go"); !valid {
+			return fmt.Errorf("invalid version %q (expected a release number such as 1.0.8)", opts.version)
+		}
+		apiURL = strings.TrimSuffix(apiURL, "/latest") + "/tags/v" + target
+		fmt.Printf("Looking up release v%s (current version: v%s)...\n", target, appVersion)
+	} else {
+		fmt.Printf("Checking for updates (current version: v%s)...\n", appVersion)
+	}
 
-	req, err := http.NewRequest("GET", opts.apiURL, nil)
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create update request: %w", err)
 	}
@@ -61,6 +78,9 @@ func runUpdateWith(opts updaterOptions) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound && target != "" {
+		return fmt.Errorf("release v%s does not exist; see https://github.com/nyumuharon/dependency-tracker/releases", target)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GitHub release check returned status %d", resp.StatusCode)
 	}
@@ -76,12 +96,18 @@ func runUpdateWith(opts updaterOptions) error {
 	if !valid {
 		return fmt.Errorf("invalid release version %q", latestTag)
 	}
-	if comparison <= 0 {
+	switch {
+	case comparison == 0 && target != "":
+		fmt.Printf("✓ dep-tracker v%s is already installed.\n", appVersion)
+		return nil
+	case comparison <= 0 && target == "":
 		fmt.Printf("✓ dep-tracker is already up to date (v%s).\n", appVersion)
 		return nil
+	case comparison < 0:
+		fmt.Printf("Downgrading to %s (installed: v%s)\n", latestTag, appVersion)
+	default:
+		fmt.Printf("Found newer version: %s (installed: v%s)\n", latestTag, appVersion)
 	}
-
-	fmt.Printf("Found newer version: %s (installed: v%s)\n", latestTag, appVersion)
 
 	// Determine binary name for current platform
 	goos := opts.platform

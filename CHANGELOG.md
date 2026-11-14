@@ -1,12 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.1.1
 
 Found by comparing results with Syft on public projects (see `docs/real-world-validation.md`):
 - Maven: resolve dependency versions from parent POMs and imported BOMs, using a local parent first and Maven Central otherwise, with a permanent cache of published POMs and retries when the repository rate-limits; if it keeps refusing, the scan stops contacting it and reports the remaining versions as unresolved. A Spring Boot project previously lost every dependency whose version comes from `spring-boot-starter-parent`. Dependencies whose version still cannot be found are reported as unresolved instead of being left out.
 - NuGet: treat a plain `Version="1.2.3"` as exact (NuGet restores the lowest matching version), so .NET projects are checked instead of reporting every package as unresolved.
 - pnpm: skip local workspace folders (`file:`, `link:`), which made every pnpm monorepo scan incomplete.
 - Bundler: skip `PATH` gems, which are local source folders rather than published gems.
+- `dep-tracker update --version <version>` installs a specific release, including an older one, with the same checksum verification.
 
 ## 1.1.0
 

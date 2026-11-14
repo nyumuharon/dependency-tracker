@@ -228,7 +228,13 @@ dep-tracker -v
 ```bash
 dep-tracker update
 ```
-Automatically checks GitHub Releases for new versions and upgrades the `dep-tracker` binary in-place. Both installers and the updater require the downloaded binary to match its entry in the release’s `SHA256SUMS.txt`. Missing checksums, download failures, and mismatches stop installation before replacing an existing binary.
+Automatically checks GitHub Releases for new versions and upgrades the `dep-tracker` binary in-place.
+
+To install a specific release instead, including an older one (a downgrade), name its version:
+```bash
+dep-tracker update --version 1.0.8
+```
+Running `dep-tracker update` again returns to the latest release. Both installers and the updater require the downloaded binary to match its entry in the release’s `SHA256SUMS.txt`. Missing checksums, download failures, and mismatches stop installation before replacing an existing binary.
 
 ---
 

@@ -34,7 +34,7 @@ const (
 	maxStalenessConcurrency = 24
 )
 
-const appVersion = "1.1.0"
+const appVersion = "1.1.1"
 
 // cliOptions holds the command-line flags accepted by dep-tracker.
 type cliOptions struct {
@@ -58,6 +58,9 @@ COMMANDS
                    lockfile or environment file, print a prioritised risk
                    report, and write an SBOM and a SARIF report.
   update           Check GitHub Releases and upgrade dep-tracker in-place.
+  update --version <version>
+                   Install a specific release, older or newer, e.g.
+                   'dep-tracker update --version 1.0.8' to downgrade.
   help             Show this help.
   version          Print the version number.
 
@@ -191,7 +194,19 @@ func run(args []string) int {
 	}
 
 	if args[0] == "update" {
-		if err := runUpdate(); err != nil {
+		// dep-tracker update [--version X]: X may be older (a downgrade).
+		version := ""
+		switch {
+		case len(args) == 1:
+		case len(args) == 3 && args[1] == "--version":
+			version = args[2]
+		case len(args) == 2 && strings.HasPrefix(args[1], "--version="):
+			version = strings.TrimPrefix(args[1], "--version=")
+		default:
+			fmt.Fprintln(os.Stderr, "Error: usage: dep-tracker update [--version <version>]")
+			return 1
+		}
+		if err := runUpdate(version); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}

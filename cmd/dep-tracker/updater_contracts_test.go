@@ -25,6 +25,7 @@ func TestUpdaterPlatformAndFailureContracts(t *testing.T) {
 		{"api-request-failure", "linux", true}, {"api-network-failure", "linux", true}, {"api-status-failure", "linux", true},
 		{"api-json-failure", "linux", true}, {"invalid-version", "linux", true}, {"current-version", "linux", false},
 		{"old-version", "linux", false}, {"checksum-failure", "linux", true},
+		{"downgrade", "linux", false}, {"target-current", "linux", false}, {"target-missing", "linux", true}, {"target-invalid", "linux", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,6 +91,19 @@ func TestUpdaterPlatformAndFailureContracts(t *testing.T) {
 					case "old-version":
 						return response(200, `{"tag_name":"v0.0.1"}`), nil
 					}
+					// update --version X asks for that release, not the latest.
+					if strings.Contains(r.URL.Path, "/tags/") {
+						switch tc.name {
+						case "target-missing":
+							return response(404, ""), nil
+						case "target-current":
+							return response(200, fmt.Sprintf(`{"tag_name":%q}`, "v"+appVersion)), nil
+						}
+						if r.URL.Path != "/tags/v0.0.1" {
+							t.Errorf("wrong release requested: %s", r.URL.Path)
+						}
+						return response(200, `{"tag_name":"v0.0.1"}`), nil
+					}
 					return response(200, `{"tag_name":" v99.0.0 "}`), nil
 				}
 				binary := "dep-tracker-" + tc.platform + "-amd64"
@@ -109,6 +123,16 @@ func TestUpdaterPlatformAndFailureContracts(t *testing.T) {
 			if tc.name == "api-request-failure" {
 				options.apiURL = "\ninvalid"
 			}
+			switch tc.name {
+			case "downgrade":
+				options.version = "v0.0.1"
+			case "target-current":
+				options.version = appVersion
+			case "target-missing":
+				options.version = "9.9.9"
+			case "target-invalid":
+				options.version = "not-a-version"
+			}
 			err := runUpdateWith(options)
 			if (err != nil) != tc.fail {
 				t.Fatalf("unexpected update outcome: %v", err)
@@ -124,7 +148,7 @@ func TestUpdaterPlatformAndFailureContracts(t *testing.T) {
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			upgraded := !tc.fail && tc.name != "current-version" && tc.name != "old-version"
+			upgraded := !tc.fail && tc.name != "current-version" && tc.name != "old-version" && tc.name != "target-current"
 			if upgraded && string(data) != "verified new executable" {
 				t.Fatal("verified binary was not installed")
 			}
@@ -183,6 +207,15 @@ func TestCLICommandsAndProcessExit(t *testing.T) {
 		}
 		if got != want {
 			t.Fatalf("update exit=%d want=%d", got, want)
+		}
+	}
+	// update --version accepts both spellings; anything else is a usage error.
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return response(200, fmt.Sprintf(`{"tag_name":%q}`, "v"+appVersion)), nil
+	})
+	for args, want := range map[string]int{"update --version " + appVersion: 0, "update --version=" + appVersion: 0, "update --force": 1, "update --version": 1} {
+		if got := run(strings.Fields(args)); got != want {
+			t.Errorf("%s: exit=%d want=%d", args, got, want)
 		}
 	}
 }
