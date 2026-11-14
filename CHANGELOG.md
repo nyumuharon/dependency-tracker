@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
 
 - Date Maven staleness from the most recently published version instead of the highest version number, so a maintained release line is not reported stale because of an old pre-release on a newer major.
 - Report the fixed release when an advisory's introduced version carries a qualifier (such as `2.0-beta9`) and the scanned version belongs to a later numeric release.
