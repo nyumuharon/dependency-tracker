@@ -64,6 +64,24 @@ over time; reruns may produce different findings.
 Existing projects on the local machine were also scanned read-only. Their
 reports and dependency details remain in local storage to preserve privacy.
 
+### Online scans with 1.1.0 plus the fixes above — 15 November 2026
+
+| Project | Dependencies | Advisories | Vulnerable packages | Incomplete packages | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Flask | 79 | 38 | 7 | 0 | 0 |
+| Symfony Demo | 155 | 0 | 0 | 0 | 0 |
+| Rails | 219 | 74 | 20 | 0 | 0 |
+| Gin | 32 | 8 | 2 | 1 (advisory without any severity) | 2 |
+| bat | 316 | 2 | 2 | 3 (two advisories without severity; one crate whose versions are all yanked) | 2 |
+| eShop | 96 | 0 | 0 | 7 (no stable release date for withdrawn or preview-only NuGet packages) | 2 |
+| Spring Petclinic | 28 | 0 | 0 | 25 (Maven Central was rate-limiting this client during the run, so parent versions stayed unresolved) | 2 |
+
+Petclinic's versions resolved correctly when Maven Central was reachable (26 of 28,
+see above); during this run the rate-limit safeguard stopped further requests and
+reported the dependencies as unresolved, as designed. Packages whose every release is
+withdrawn (unlisted on NuGet, yanked on crates.io) currently show "release date
+unavailable" rather than being flagged stale.
+
 ## Reproduce the inventory comparison
 
 Clone the four repositories into a directory with child names `axios`, `gin`,
