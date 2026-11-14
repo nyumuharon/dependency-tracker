@@ -9,32 +9,42 @@ The tool combines a **Three-Layer Intelligent Dependency Discovery Engine** with
 ## Key Capabilities
 
 * **Three-Layer Intelligent Dependency Discovery**:
-  * **Layer 1 — Manifests, Lockfiles & Build DSLs**: Recursively detects and parses 30+ manifest, lockfile, and build DSL formats across **12 ecosystems** (npm/Yarn/pnpm, PyPI/Poetry/Pipenv/uv/Conda, Maven/Gradle, NuGet/.NET, Cargo/Rust, Go Modules, Composer/PHP, RubyGems/Bundler, Conan/vcpkg/CMake, Dart/Flutter Pub, Elixir Mix, and Swift Package Manager). Automatically resolves unpinned manifests against exact versions installed in local environments.
-  * **Layer 2 — Installed Virtual & Vendor Environment Introspection**: Automatically inspects **8 installed environment formats** when lockfiles are absent or manifests use loose version specifiers (`>=`, `^`, `*`): Python `venv`/`.venv` (`*.dist-info/METADATA`), Node `node_modules/*/package.json`, .NET `obj/project.assets.json`, PHP `vendor/composer/installed.json`, Go `vendor/modules.txt`, Ruby `vendor/bundle/**/*.gemspec`, C/C++ `vcpkg_installed/vcpkg/status`, and Dart `.dart_tool/package_config.json`.
-  * **Layer 3 — Zero-Manifest Source-Code Import Fallback**: Extracts third-party imports directly from source files across **10 programming language families** (`.py`, `.js`/`.ts`/`.jsx`/`.tsx`, `.go`, `.rs`, `.c`/`.cpp`/`.h`/`.hpp`, `.java`/`.kt`, `.cs`, `.php`, `.rb`, and `.dart`), filters out standard-library modules, maps import names to canonical registry packages, and labels their versions as unresolved rather than assuming that the latest registry release is installed.
-* **High-Speed Two-Phase Batch OSV Engine**: Uses a pooled HTTP/2 transport (`MaxIdleConnsPerHost: 32`) to query `/v1/querybatch` in batches of up to 1,000 resolved packages, then concurrently fetches full query results for packages with matching advisories.
-* **Instant In-Memory CVSS v3.1 Vector Calculator & Cached NVD 2.0 Fallback**: Computes exact CVSS v3.1 base scores in memory without a network request from vector strings using official FIRST.org equations, with parallelized NIST NVD CVE 2.0 API fallback backed by a 24-hour local disk cache (`nvd_cache.json`).
-* **CISA KEV & FIRST EPSS Exploitability Prioritization**: Cross-references every CVE against CISA's Known Exploited Vulnerabilities (KEV) catalog and queries FIRST.org EPSS in batches to compute a two-dimensional four-tier risk priority (`CRITICAL-EXPLOITABLE`, `HIGH`, `MEDIUM`, `LOW`).
-* **Fast Multi-Registry Staleness Auditing**: Audits package maintenance health concurrently across npm, PyPI lightweight RSS release feeds (`~10 KB` instead of multi-MB JSON payloads), Maven Central, NuGet, Crates.io, Go Proxy, Packagist, RubyGems, ConanCenter, Pub.dev, and Hex.pm with a 12-hour local disk cache (`staleness_cache.json`), flagging packages untouched for > 2 years (730 days).
-* **CycloneDX v1.4 SBOM & OASIS SARIF v2.1.0 Export**: Automatically generates `sbom.json` (with standardized PURLs and embedded CVSS/EPSS/KEV ratings) and `results.sarif` (for GitHub Code Scanning and CI/CD inline PR annotations).
+  * **Layer 1 — Manifests, Lockfiles & Build DSLs**: Recursively detects and parses 30+ manifest, lockfile, and build DSL formats across **12 ecosystems** (npm/Yarn/pnpm, PyPI/Poetry/Pipenv/uv/Conda, Maven/Gradle, NuGet/.NET, Cargo/Rust, Go Modules, Composer/PHP, RubyGems/Bundler, Conan/vcpkg/CMake, Dart/Flutter Pub, Elixir Mix, and Swift Package Manager). Lockfiles take precedence over manifests in every ecosystem, and manifest details that change what is installed (`go.mod` `replace`, npm/Yarn aliases, Cargo renames, Maven managed versions, `requirements.txt` includes and hashes) are applied.
+  * **Layer 2 — Installed Virtual & Vendor Environment Introspection**: Inspects **8 installed environment formats** when lockfiles are absent: Python virtual environments (any folder with `pyvenv.cfg`, plus `venv`/`.venv`), Node `node_modules/*/package.json`, .NET `obj/project.assets.json`, PHP `vendor/composer/installed.json`, Go `vendor/modules.txt`, Ruby `vendor/bundle/**/*.gemspec`, C/C++ `vcpkg_installed/vcpkg/status`, and Dart `.dart_tool/package_config.json`. The installed version replaces the declared one, including a manifest pin that the environment does not match.
+  * **Layer 3 — Source-Code Imports**: Extracts third-party imports from source files across **10 programming language families** (`.py`, `.js`/`.ts`/`.jsx`/`.tsx`, `.go`, `.rs`, `.c`/`.cpp`/`.h`/`.hpp`, `.java`/`.kt`, `.cs`, `.php`, `.rb`, and `.dart`) wherever no dependency source covers that language, filters out standard-library and project-local modules, maps import names to canonical registry packages, and labels their versions as unresolved rather than assuming that the latest registry release is installed.
+* **High-Speed Two-Phase Batch OSV Engine**: Uses a pooled HTTP/2 transport (`MaxIdleConnsPerHost: 32`) to query `/v1/querybatch` in batches of up to 1,000 resolved packages, then concurrently fetches full query results for packages with matching advisories. Advisories that alias each other are merged, and withdrawn advisories and RustSec "unmaintained" notices are left out.
+* **Instant In-Memory CVSS v3.1 Vector Calculator & Cached NVD 2.0 Fallback**: Computes exact CVSS v3.1 base scores in memory from vector strings using the official FIRST.org equations. Advisories without one fall back to the NIST NVD CVE 2.0 API (CVSS v3.1, v4.0, v3.0 or v2), paced to NVD's rate limit, retried on rate-limit responses and cached for 24 hours (`nvd_cache.json`), and then to the advisory database's own rating.
+* **CISA KEV & FIRST EPSS Exploitability Prioritization**: Cross-references every CVE against CISA's Known Exploited Vulnerabilities (KEV) catalog and queries FIRST.org EPSS in batches to compute a two-dimensional risk priority (`CRITICAL-EXPLOITABLE`, `HIGH`, `MEDIUM`, `LOW`), with `UNKNOWN` for advisories whose severity no source provides.
+* **Fast Multi-Registry Staleness Auditing**: Audits package maintenance health concurrently across npm, PyPI lightweight RSS release feeds (`~10 KB` instead of multi-MB JSON payloads), Maven Central, NuGet, Crates.io, Go Proxy, Packagist, RubyGems, ConanCenter, Pub.dev, and Hex.pm with a 12-hour local disk cache (`staleness_cache.json`), flagging packages whose newest stable release is more than 2 years (730 days) old.
+* **CycloneDX v1.4 SBOM & OASIS SARIF v2.1.0 Export**: Automatically generates `sbom.json` (with standardized PURLs, unique `bom-ref`s, a serial number and embedded CVSS/EPSS/KEV ratings) and `results.sarif` (for GitHub Code Scanning and CI/CD inline PR annotations, with repository-relative locations and one fingerprint per affected package).
+
+---
+
+## Architecture
+
+![dep-tracker architecture: a scan target goes through dependency discovery, vulnerability and maintenance intelligence, risk scoring, and reporting with a CI exit code](docs/images/architecture-overview.svg)
+
+A scan runs in four stages. **Discovery** finds every dependency and where its version came from. **Intelligence** collects advisories from OSV.dev, severity from the advisory or NIST NVD, exploitation signals from CISA KEV and FIRST EPSS, and release dates from the package registries. **Scoring** places each package in a risk tier, and **reporting** writes the terminal report, JSON, a CycloneDX SBOM and a SARIF file, then sets an exit code for CI.
 
 ---
 
 ## Supported Ecosystems & Three-Layer Discovery Matrix
 
+![Dependency discovery: walk the project tree, parse dependency files, inspect installed packages, scan source-code imports; exact versions are checked and ranges or imports are reported as unresolved](docs/images/dependency-discovery.svg)
+
 ### Layer 1: Manifests, Lockfiles & Build DSLs
 
 | Ecosystem / Platform | Languages | Supported Lockfiles (Transitive) | Supported Manifests & Build DSLs (Direct) | Upstream Registry |
 | :--- | :--- | :--- | :--- | :--- |
-| **npm** | JavaScript, TypeScript | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | `package.json` | `registry.npmjs.org` |
-| **PyPI** | Python | `poetry.lock`, `Pipfile.lock`, `uv.lock` | `requirements.txt`, `pyproject.toml` (PEP 621, Poetry, PDM), `Pipfile`, `setup.py`, `setup.cfg`, `environment.yml` | `pypi.org` (JSON & RSS) |
-| **Maven / Gradle** | Java, Kotlin, Scala | `gradle.lockfile` | `pom.xml` (with `<properties>` & `<dependencyManagement>`), `build.gradle`, `build.gradle.kts`, `libs.versions.toml` | `search.maven.org` |
-| **NuGet** | C#, F#, .NET | `packages.lock.json`, `paket.lock` | `*.csproj`, `*.fsproj`, `*.vbproj`, `packages.config`, `Directory.Packages.props` | `api.nuget.org` |
-| **crates.io** | Rust | `Cargo.lock` | `Cargo.toml` | `crates.io` |
-| **Go** | Go | `go.sum` (checksum-history fallback) | `go.mod` (preferred) | `proxy.golang.org` |
+| **npm** | JavaScript, TypeScript | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | `package.json` (including `optionalDependencies` and `npm:` aliases) | `registry.npmjs.org` |
+| **PyPI** | Python | `poetry.lock`, `Pipfile.lock`, `uv.lock` | `requirements.txt` (with `-r` includes and `--hash` pins), `pyproject.toml` (PEP 621, dependency groups, Poetry, PDM, uv), `Pipfile`, `setup.py`, `setup.cfg`, `environment.yml` | `pypi.org` (JSON & RSS) |
+| **Maven / Gradle** | Java, Kotlin, Scala | `gradle.lockfile` | `pom.xml` (with nested `<properties>` & `<dependencyManagement>`), `build.gradle`, `build.gradle.kts`, `libs.versions.toml` | `search.maven.org` |
+| **NuGet** | C#, F#, .NET | `packages.lock.json`, `paket.lock` | `*.csproj`, `*.fsproj`, `*.vbproj` (with `$(Property)` versions and `VersionOverride`), `packages.config`, `Directory.Packages.props` | `api.nuget.org` |
+| **crates.io** | Rust | `Cargo.lock` | `Cargo.toml` (including renamed, workspace and platform-specific dependencies) | `crates.io` |
+| **Go** | Go | `go.sum` (checksum-history fallback) | `go.mod` (preferred; `replace` directives applied) | `proxy.golang.org` |
 | **Packagist** | PHP | `composer.lock` | `composer.json` | `repo.packagist.org` |
 | **RubyGems** | Ruby | `Gemfile.lock` | `Gemfile`, `*.gemspec` | `rubygems.org` |
-| **ConanCenter** | C, C++ | `conan.lock` | `conanfile.txt`, `conanfile.py`, `vcpkg.json`, `CMakeLists.txt` (`find_package` / `FetchContent`) | `conan.io` / GitHub |
+| **ConanCenter** | C, C++ | `conan.lock` (Conan 1 and 2) | `conanfile.txt`, `conanfile.py`, `vcpkg.json`, `CMakeLists.txt` (`find_package` / `FetchContent`) | `center2.conan.io` / GitHub |
 | **Pub** | Dart, Flutter | `pubspec.lock` | `pubspec.yaml` | `pub.dev` |
 | **Hex** | Elixir, Erlang | `mix.lock` | `mix.exs` | `hex.pm` |
 | **SwiftURL** | Swift | `Package.resolved` | `Package.swift` | GitHub / SwiftPM |
@@ -43,7 +53,7 @@ The tool combines a **Three-Layer Intelligent Dependency Discovery Engine** with
 
 | Runtime / Ecosystem | Inspected Environment Path / Artifact | Resolution Behavior |
 | :--- | :--- | :--- |
-| **Python (`PyPI`)** | `venv/`, `.venv/`, `env/` (`site-packages/*.dist-info/METADATA`, `*.egg-info/PKG-INFO`) | Resolves exact installed versions & upgrades unpinned `requirements.txt` ranges |
+| **Python (`PyPI`)** | Any folder with `pyvenv.cfg`, plus `venv/` and `.venv/` (`site-packages/*.dist-info/METADATA`, `*.egg-info/PKG-INFO`) | Resolves exact installed versions, replacing `requirements.txt` ranges and mismatched pins |
 | **Node.js (`npm`)** | `node_modules/*/package.json` & `node_modules/@scope/*/package.json` | Resolves installed direct & transitive packages when lockfiles are absent |
 | **.NET (`NuGet`)** | `obj/project.assets.json` | Extracts exact resolved NuGet package graph from `libraries` / `targets` |
 | **PHP (`Packagist`)** | `vendor/composer/installed.json` | Extracts exact installed Composer v1/v2 packages |
@@ -52,46 +62,15 @@ The tool combines a **Three-Layer Intelligent Dependency Discovery Engine** with
 | **C/C++ (`ConanCenter`)** | `vcpkg_installed/vcpkg/status` | Parses Debian-control style `Package:` / `Version:` / `Status: install ok installed` blocks |
 | **Dart / Flutter (`Pub`)** | `.dart_tool/package_config.json` | Extracts resolved Dart/Flutter packages and versions from `rootUri` cache paths |
 
-### Layer 3: Zero-Manifest Source-Code Import Fallback
+### Layer 3: Source-Code Imports
 
-When a target directory contains raw source code with no manifest, lockfile, or installed environment, `dep-tracker` scans `.py`, `.js`/`.ts`/`.jsx`/`.tsx`, `.go`, `.rs`, `.c`/`.cpp`/`.cc`/`.cxx`/`.h`/`.hpp`, `.java`, `.kt`/`.kts`, `.cs`, `.php`, `.rb`, and `.dart` files, excludes standard-library imports, maps module names to canonical package identifiers (e.g., `cv2` $\rightarrow$ `opencv-python`, `sklearn` $\rightarrow$ `scikit-learn`, `bs4` $\rightarrow$ `beautifulsoup4`, `yaml` $\rightarrow$ `PyYAML`, `PIL` $\rightarrow$ `Pillow`), and checks registry maintenance metadata. Import discovery does not establish an installed version: these packages remain unresolved until an exact manifest pin, lockfile, or installed environment is available.
-
----
-
-## Architectural Workflow
-
-```mermaid
-flowchart TD
-    Target["Target Input (Directory or Manifest/Lockfile)"] --> L1["Layer 1: Manifests, Lockfiles & Build DSLs (12 Ecosystems)"]
-    L1 --> L2["Layer 2: Installed Virtual & Vendor Environments (8 Runtimes)"]
-    L2 --> L3{"Any Manifest or Env Found?"}
-    L3 -->|No| Fallback["Layer 3: Source-Code Import Extraction (10 Languages)"]
-    L3 -->|Yes| Dedupe["Dependency Deduplication & Installed-Version Pinning"]
-    Fallback --> Dedupe
-
-    Dedupe --> OSVBatch["Two-Phase OSV Batch Engine (/v1/querybatch -> /v1/vulns)"]
-    Dedupe --> Stale["Concurrent Multi-Registry Staleness Checker + 12h Disk Cache"]
-
-    OSVBatch --> LocalCVSS["In-Memory CVSS v3.1 Vector Calculator"]
-    LocalCVSS --> NVDCheck{"CVSS Resolved?"}
-    NVDCheck -->|No| NVDFallback["Parallel NIST NVD 2.0 API + 24h Disk Cache"]
-    NVDCheck -->|Yes| KEVCheck["CISA KEV Catalog Check"]
-    NVDFallback --> KEVCheck
-    KEVCheck --> EPSS["Batched FIRST.org EPSS 30-Day Probability"]
-
-    EPSS & Stale --> Scoring["Two-Dimensional Risk Matrix (CVSS + EPSS + CISA KEV)"]
-    Scoring --> Report["Prioritized Terminal Report & Upgrade Guidance"]
-    Scoring --> SBOM["CycloneDX v1.4 JSON SBOM (sbom.json)"]
-    Scoring --> SARIF["OASIS SARIF v2.1.0 Report (results.sarif)"]
-
-    Report --> Gate{"Critical-Exploitable Detected?"}
-    Gate -->|Yes| ExitFail["Exit Code 1 (CI/CD Policy Failure)"]
-    Gate -->|No| ExitPass["Exit Code 0 (Passed)"]
-```
+Wherever source code has no manifest, lockfile, or installed environment for its language (checked per ecosystem, so a `package.json` does not hide the Python scripts beside it), `dep-tracker` scans `.py`, `.js`/`.ts`/`.jsx`/`.tsx`, `.go`, `.rs`, `.c`/`.cpp`/`.cc`/`.cxx`/`.h`/`.hpp`, `.java`, `.kt`/`.kts`, `.cs`, `.php`, `.rb`, and `.dart` files, excludes standard-library imports, maps module names to canonical package identifiers (e.g., `cv2` $\rightarrow$ `opencv-python`, `sklearn` $\rightarrow$ `scikit-learn`, `bs4` $\rightarrow$ `beautifulsoup4`, `yaml` $\rightarrow$ `PyYAML`, `PIL` $\rightarrow$ `Pillow`), and checks registry maintenance metadata. Import discovery does not establish an installed version: these packages remain unresolved until an exact manifest pin, lockfile, or installed environment is available.
 
 ---
 
 ## Risk Scoring Matrix
+
+![Risk scoring: severity comes from the advisory's CVSS vector, then NVD, then the advisory database rating; the first matching rule sets the advisory tier; the most severe advisory sets the package tier and the exit code](docs/images/risk-scoring.svg)
 
 | Priority Tier | Qualification Criteria | Description |
 | :--- | :--- | :--- |
@@ -258,7 +237,7 @@ Fixed releases are selected for the queried package and the affected interval co
 | `1` | A completed scan found a critical-exploitable package, or arguments/input could not be processed. |
 | `2` | Checks were incomplete, versions unresolved, or a report could not be written. Takes precedence over code `1` for incomplete scans. |
 
-Report parent directories are created automatically. SBOM and SARIF metadata use the running application version. Unresolved dependencies have their original version declaration recorded as a property, without a fabricated version or PURL.
+Report parent directories are created automatically. SBOM and SARIF metadata use the running application version. Unresolved dependencies have their original version declaration recorded as a property, without a fabricated version or PURL. SARIF rules describe the vulnerability, and each result names the affected package and version; locations are relative to the Git repository root, or absolute `file://` URIs for manifests outside it. Advisories with no known severity carry no `security-severity` value rather than `0.0`. With `--stale-only`, the terminal summary covers only the packages shown.
 
 ---
 
