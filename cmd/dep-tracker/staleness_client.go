@@ -53,7 +53,7 @@ func SaveStalenessCache() {
 	data, err := json.Marshal(stalenessCacheData)
 	stalenessCacheMu.RUnlock()
 	if err == nil {
-		_ = os.WriteFile(getStalenessCachePath(), data, 0644)
+		writeCacheFile(getStalenessCachePath(), data)
 	}
 }
 
@@ -241,7 +241,10 @@ func checkMavenStaleness(name string) (StalenessResult, error) {
 	}
 
 	q := url.QueryEscape(fmt.Sprintf("g:%s AND a:%s", parts[0], parts[1]))
-	apiURL := fmt.Sprintf("https://search.maven.org/solrsearch/select?q=%s&rows=1&wt=json", q)
+	// core=gav lists individual versions, newest publication first. The default
+	// artifact core reports only the highest version number, whose date can be
+	// years older than the newest release on a maintained branch.
+	apiURL := fmt.Sprintf("https://search.maven.org/solrsearch/select?q=%s&core=gav&rows=1&wt=json", q)
 
 	resp, err := httpClient.Get(apiURL)
 	if err != nil {
@@ -256,7 +259,7 @@ func checkMavenStaleness(name string) (StalenessResult, error) {
 	var data struct {
 		Response struct {
 			Docs []struct {
-				LatestVersion string `json:"latestVersion"`
+				LatestVersion string `json:"v"`
 				Timestamp     int64  `json:"timestamp"`
 			} `json:"docs"`
 		} `json:"response"`
@@ -309,41 +312,67 @@ func checkNuGetStaleness(name string) (StalenessResult, error) {
 	}
 
 	var data struct {
-		Items []struct {
-			Upper string `json:"upper"`
-			Items []struct {
-				CatalogEntry struct {
-					Version   string `json:"version"`
-					Published string `json:"published"`
-				} `json:"catalogEntry"`
-			} `json:"items"`
-		} `json:"items"`
+		Items []nugetRegistrationPage `json:"items"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return StalenessResult{}, err
 	}
 
-	if len(data.Items) == 0 {
-		return StalenessResult{}, nil
+	// Pages are in version order. Large packages leave page items out of the
+	// index, so those pages are fetched. The newest listed stable release is
+	// the latest version; prereleases and unlisted versions are skipped.
+	for i := len(data.Items) - 1; i >= 0; i-- {
+		page := data.Items[i]
+		if len(page.Items) == 0 && page.ID != "" {
+			fetched, err := fetchNuGetPage(page.ID)
+			if err != nil {
+				return StalenessResult{LatestVersion: page.Upper}, err
+			}
+			page = fetched
+		}
+		for j := len(page.Items) - 1; j >= 0; j-- {
+			entry := page.Items[j].CatalogEntry
+			if strings.Contains(entry.Version, "-") || (entry.Listed != nil && !*entry.Listed) {
+				continue
+			}
+			t, err := time.Parse(time.RFC3339, entry.Published)
+			if err != nil {
+				return StalenessResult{LatestVersion: entry.Version}, nil
+			}
+			return StalenessResult{
+				LatestVersion: entry.Version,
+				LastUpdated:   t,
+				IsStale:       isStale(t),
+			}, nil
+		}
 	}
+	return StalenessResult{}, nil
+}
 
-	// Last page, last item = latest version
-	lastPage := data.Items[len(data.Items)-1]
-	if len(lastPage.Items) == 0 {
-		return StalenessResult{LatestVersion: lastPage.Upper}, nil
-	}
+type nugetRegistrationPage struct {
+	ID    string `json:"@id"`
+	Upper string `json:"upper"`
+	Items []struct {
+		CatalogEntry struct {
+			Version   string `json:"version"`
+			Published string `json:"published"`
+			Listed    *bool  `json:"listed"`
+		} `json:"catalogEntry"`
+	} `json:"items"`
+}
 
-	entry := lastPage.Items[len(lastPage.Items)-1].CatalogEntry
-	t, err := time.Parse(time.RFC3339, entry.Published)
+func fetchNuGetPage(pageURL string) (nugetRegistrationPage, error) {
+	var page nugetRegistrationPage
+	resp, err := httpClient.Get(pageURL)
 	if err != nil {
-		return StalenessResult{LatestVersion: entry.Version}, nil
+		return page, err
 	}
-
-	return StalenessResult{
-		LatestVersion: entry.Version,
-		LastUpdated:   t,
-		IsStale:       isStale(t),
-	}, nil
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return page, fmt.Errorf("nuget page returned %d", resp.StatusCode)
+	}
+	err = json.NewDecoder(resp.Body).Decode(&page)
+	return page, err
 }
 
 // ── Go ────────────────────────────────────────────────────────────────────────
@@ -408,24 +437,39 @@ func checkCratesStaleness(name string) (StalenessResult, error) {
 
 	var data struct {
 		Crate struct {
-			MaxVersion string `json:"max_version"`
-			UpdatedAt  string `json:"updated_at"`
+			MaxVersion       string `json:"max_version"`
+			MaxStableVersion string `json:"max_stable_version"`
 		} `json:"crate"`
+		Versions []struct {
+			Num       string `json:"num"`
+			CreatedAt string `json:"created_at"`
+		} `json:"versions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return StalenessResult{}, err
 	}
 
-	t, err := time.Parse(time.RFC3339, data.Crate.UpdatedAt)
-	if err != nil {
-		return StalenessResult{LatestVersion: data.Crate.MaxVersion}, nil
+	// The crate's updated_at changes with any metadata edit; the release date
+	// is the creation date of the newest (stable) version.
+	latest := data.Crate.MaxStableVersion
+	if latest == "" {
+		latest = data.Crate.MaxVersion
 	}
-
-	return StalenessResult{
-		LatestVersion: data.Crate.MaxVersion,
-		LastUpdated:   t,
-		IsStale:       isStale(t),
-	}, nil
+	for _, v := range data.Versions {
+		if v.Num != latest {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, v.CreatedAt)
+		if err != nil {
+			break
+		}
+		return StalenessResult{
+			LatestVersion: latest,
+			LastUpdated:   t,
+			IsStale:       isStale(t),
+		}, nil
+	}
+	return StalenessResult{LatestVersion: latest}, nil
 }
 
 // ── PHP (Packagist) ───────────────────────────────────────────────────────────
@@ -533,7 +577,7 @@ func checkConanStaleness(name string) (StalenessResult, error) {
 				v := strings.TrimSuffix(trimmed, ":")
 				v = strings.Trim(v, `"'`)
 				if v != "" {
-					return StalenessResult{LatestVersion: v}, nil
+					return conanReleaseDate(name, v)
 				}
 			} else if !strings.HasPrefix(line, " ") && trimmed != "" {
 				// Reached another top-level key
@@ -546,6 +590,45 @@ func checkConanStaleness(name string) (StalenessResult, error) {
 		return StalenessResult{}, err
 	}
 	return StalenessResult{}, nil
+}
+
+// conanCenterURL is the ConanCenter remote; tests replace it.
+var conanCenterURL = "https://center2.conan.io"
+
+// conanReleaseDate dates a ConanCenter version by its first recipe revision,
+// which is when that version became available.
+func conanReleaseDate(name, version string) (StalenessResult, error) {
+	res := StalenessResult{LatestVersion: version}
+	revURL := fmt.Sprintf("%s/v2/conans/%s/%s/_/_/revisions", conanCenterURL, url.PathEscape(name), url.PathEscape(version))
+	resp, err := httpClient.Get(revURL)
+	if err != nil {
+		return res, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return res, fmt.Errorf("conan center returned %d", resp.StatusCode)
+	}
+	var data struct {
+		Revisions []struct {
+			Time string `json:"time"`
+		} `json:"revisions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return res, err
+	}
+	for _, r := range data.Revisions {
+		t, err := time.Parse("2006-01-02T15:04:05.000-0700", r.Time)
+		if err != nil {
+			continue
+		}
+		if res.LastUpdated.IsZero() || t.Before(res.LastUpdated) {
+			res.LastUpdated = t
+		}
+	}
+	if !res.LastUpdated.IsZero() {
+		res.IsStale = isStale(res.LastUpdated)
+	}
+	return res, nil
 }
 
 // ── Dart / Flutter (Pub) ──────────────────────────────────────────────────────

@@ -90,6 +90,10 @@ PRIORITY TIERS
   MEDIUM                CVSS 4.0 - 6.9
   LOW                   CVSS below 4.0
   NONE                  No known vulnerabilities
+  UNKNOWN               Checks incomplete, or advisories with no known severity
+
+  An advisory with no CVSS score is ranked by its advisory database rating
+  (low, moderate, high, critical) when one exists.
 
 EXIT CODES
   0  Scan finished; no CRITICAL-EXPLOITABLE packages found.
@@ -375,8 +379,6 @@ func run(args []string) int {
 						nvdErrors[id] = err.Error()
 					} else if score > 0 {
 						nvdScores[id] = score
-					} else {
-						nvdErrors[id] = "No severity available for " + id
 					}
 					nvdMu.Unlock()
 				}(v.CVEID)
@@ -420,11 +422,14 @@ func run(args []string) int {
 			if strings.HasPrefix(v.CVEID, "CVE-") && !v.EPSSKnown {
 				checkErrors = append(checkErrors, "EPSS unavailable for "+v.CVEID)
 			}
-			if msg := nvdErrors[v.CVEID]; msg != "" {
-				checkErrors = append(checkErrors, msg)
-			}
-			if v.CVSS == 0 {
-				checkErrors = append(checkErrors, "Severity unavailable for "+v.CVEID)
+			// A failed NVD lookup matters only when no other source rated the
+			// advisory.
+			if v.severityScore() == 0 {
+				if msg := nvdErrors[v.CVEID]; msg != "" {
+					checkErrors = append(checkErrors, "Severity unavailable for "+v.CVEID+": "+msg)
+				} else {
+					checkErrors = append(checkErrors, "Severity unavailable for "+v.CVEID)
+				}
 			}
 		}
 		if st := stalenessMap[pkg.StalenessKey()]; st.CheckError != "" {
@@ -468,6 +473,9 @@ func run(args []string) int {
 		}
 	} else {
 		PrintReport(shown)
+		if opts.staleOnly {
+			fmt.Fprintf(info, "--stale-only: the summary covers the %d of %d packages shown; the SBOM and SARIF cover all %d.\n", len(shown), len(results), len(results))
+		}
 	}
 
 	// 9. Generate SBOM and SARIF reports (always cover the full result set)

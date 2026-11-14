@@ -100,7 +100,9 @@ flowchart TD
 | **MEDIUM** | `4.0 <= CVSS < 7.0` | Moderate security defects requiring scheduled patching. |
 | **LOW** | `0.0 < CVSS < 4.0` | Low-impact advisories or defense-in-depth findings. |
 | **NONE** | Completed checks found no advisories | No known advisories were returned for the scanned version. |
-| **UNKNOWN** | Checks incomplete and no findings available | Resolve the reported errors before treating the scan as clean. |
+| **UNKNOWN** | Checks incomplete and no findings available, **OR** every advisory found has no known severity | Resolve the reported errors before treating the scan as clean. An advisory without a severity is never ranked as low risk. |
+
+An advisory with no CVSS score from OSV or NVD is ranked by the qualitative rating in its advisory database record (low, moderate, high, critical) when one exists, using the lowest score of that band. High and critical ratings count as `CVSS >= 7.0`. Reports show such advisories as `unscored, rated HIGH` rather than a numeric score.
 
 ---
 
@@ -236,6 +238,14 @@ Unreadable or malformed installed metadata is reported with its path. Readable d
 
 Each JSON package result includes `ScanStatus` (`complete` or `incomplete`), `CheckErrors`, and `Pkg.VersionSource` (`manifest`, `lockfile`, `installed`, `constraint`, or `import`). Lockfile and installed-environment decisions are scoped to each project directory, so sibling projects in a monorepo are resolved independently. Go directory scans prefer `go.mod` over `go.sum`, which can include historical dependency versions.
 
+Discovery keeps going when something cannot be read: an unreadable folder or a malformed manifest is reported with its path, the readable dependencies are still checked, and the scan exits with code `2`. Folders named `build`, `dist`, `target` or `bin` are skipped only when they sit next to a dependency file (where they hold build output); elsewhere they are scanned like any other project folder. A Python virtual environment is recognised by its `pyvenv.cfg`, whatever its name. An installed version replaces the version declared in a manifest of the same project, including a pin that the environment does not match.
+
+Manifest details that change which package or version is checked: `requirements.txt` follows `-r` includes, joins `\` continuations and ignores `--hash` options; `go.mod` applies `replace` directives (a replacement by a local directory is not checked); npm and Yarn aliases (`"alias": "npm:real@1.0.0"`) are checked as the real package; Cargo renamed, workspace and platform-specific dependencies are included, while path, Git and workspace-local crates are not; Maven `dependencyManagement` pins are included but imported BOMs are not. vcpkg ports are checked under their ConanCenter names, because OSV has no vcpkg ecosystem; where the two names differ (vcpkg `curl`, Conan `libcurl`), findings can be missed.
+
+Source-code imports are matched to local modules per project: a Python folder counts as local only when it has `__init__.py`, and a module never hides the package it is named after (`celery.py` may import `celery`). Imports are reported per ecosystem, so a `package.json` does not hide the Python imports beside it.
+
+NVD lookups are paced to NVD's public limit (5 requests per 30 seconds) and retried on rate-limit responses, so scans that need many lookups take longer rather than ending incomplete. Set `NVD_API_KEY` to use NVD's higher keyed limit. A failed NVD lookup only makes a scan incomplete when no other source rated the advisory. RustSec "unmaintained" notices are not reported as vulnerabilities, and advisories that list each other as aliases are merged.
+
 Ranges such as `^1.2.3`, `>=2.0,<3`, Cargo's implicit caret ranges, and unpinned imports are preserved. They are resolved against local installed environments when available. Otherwise vulnerability checks for those packages remain incomplete; the scanner never substitutes the latest registry version. An exact manifest pin identifies a declared version, not proof that the package is installed.
 
 OSV failures, unavailable KEV/EPSS data, missing severity data, and failed maintenance checks are reported explicitly. Stale KEV data may still supply known findings, but a failed refresh makes the scan incomplete. A package with findings retains its known priority even if another check fails. `--stale-only` also includes incomplete results so errors remain visible. The SBOM and SARIF always cover the full result set; SARIF records incomplete checks as execution notifications.
@@ -254,7 +264,7 @@ Report parent directories are created automatically. SBOM and SARIF metadata use
 
 ## Testing
 
-The Go suite has 100% statement coverage and covers 36 curated parser cases across 12 ecosystems, compares a shared npm fixture against npm's inventory and pinned Syft 1.55.0, and exercises discovery errors, EPSS missing-data handling, registry responses, caches, and report exports. CI runs Go race tests, coverage, native builds, executable startup, and installer regression tests on Linux and macOS. Windows installer tests run separately. Each native Go CI run requires 100% statement coverage.
+The Go suite has 100% statement coverage and covers 36 curated parser cases across 12 ecosystems, compares a shared npm fixture against npm's inventory and pinned Syft 1.55.0, and exercises discovery errors, EPSS missing-data handling, registry responses, caches, and report exports. CI runs Go race tests, coverage, native builds, executable startup, and installer regression tests on Linux and macOS. The Go tests, `go vet` and a native build also run on Windows, and Windows installer tests run separately. The Linux and macOS Go runs require 100% statement coverage; on Windows the Unix file-permission tests are skipped, so coverage is not enforced there. A release fails before publishing when its tag does not match `appVersion` in `cmd/dep-tracker/main.go`.
 
 See [real-world validation](docs/real-world-validation.md) for the public-project inventory comparisons and online scan outcomes. See [accuracy validation](docs/accuracy-validation.md) for reproducible comparisons, benchmarks, and the limits of these checks. To isolate cached intelligence on any OS, set `DEP_TRACKER_CACHE_DIR` to a dedicated directory.
 

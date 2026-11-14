@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -275,7 +276,7 @@ func TestExportsIncludeActualVersionAndIncompleteStatus(t *testing.T) {
 }
 
 func TestScanExitCodesAndJSON(t *testing.T) {
-	for _, mode := range []string{"clean", "osv-down", "unresolved", "critical", "export-failure", "epss-down", "kev-down", "nvd-down", "staleness-down", "epss-missing", "epss-invalid", "epss-zero", "discovery-error", "kev-active", "kev-ransomware", "nvd-score", "nvd-empty", "text-report", "sarif-failure", "json-output-failure", "stale-only", "stale-filtered-clean", "empty-project", "discovery-empty", "batch-fallback", "multiple-versions"} {
+	for _, mode := range []string{"clean", "osv-down", "unresolved", "critical", "export-failure", "epss-down", "kev-down", "nvd-down", "staleness-down", "epss-missing", "epss-invalid", "epss-zero", "discovery-error", "kev-active", "kev-ransomware", "nvd-score", "nvd-empty", "text-report", "sarif-failure", "json-output-failure", "stale-only", "stale-only-text", "stale-filtered-clean", "empty-project", "discovery-empty", "batch-fallback", "multiple-versions"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			t.Setenv("DEP_TRACKER_CACHE_DIR", filepath.Join(root, "cache"))
@@ -307,7 +308,7 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 					if mode == "staleness-down" {
 						return response(503, `{}`), nil
 					}
-					if mode == "stale-only" {
+					if mode == "stale-only" || mode == "stale-only-text" {
 						return response(200, `{"dist-tags":{"latest":"2.0.0"},"time":{"2.0.0":"2020-01-01T00:00:00Z"}}`), nil
 					}
 					return response(200, fmt.Sprintf(`{"dist-tags":{"latest":"2.0.0"},"time":{"2.0.0":%q}}`, time.Now().UTC().Format(time.RFC3339))), nil
@@ -388,10 +389,10 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			}
 			os.Stdout = file
 			args := []string{"scan", manifest, "--sbom", sbom, "--sarif", sarif}
-			if mode != "text-report" {
+			if mode != "text-report" && mode != "stale-only-text" {
 				args = append(args, "--json")
 			}
-			if mode == "stale-only" || mode == "stale-filtered-clean" {
+			if mode == "stale-only" || mode == "stale-only-text" || mode == "stale-filtered-clean" {
 				args = append(args, "--stale-only")
 			}
 			if mode == "json-output-failure" {
@@ -401,7 +402,7 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			os.Stdout = stdout
 			file.Close()
 			want := 2
-			if mode == "clean" || mode == "epss-zero" || mode == "text-report" || mode == "stale-only" || mode == "stale-filtered-clean" || mode == "empty-project" || mode == "multiple-versions" {
+			if mode == "clean" || mode == "epss-zero" || mode == "text-report" || mode == "stale-only" || mode == "stale-only-text" || mode == "stale-filtered-clean" || mode == "empty-project" || mode == "multiple-versions" {
 				want = 0
 			}
 			if mode == "critical" || mode == "kev-active" || mode == "kev-ransomware" || mode == "nvd-score" || mode == "batch-fallback" {
@@ -417,6 +418,12 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			if mode == "text-report" {
 				if !strings.Contains(string(data), "EXECUTIVE SUMMARY") {
 					t.Fatal("missing text report")
+				}
+				return
+			}
+			if mode == "stale-only-text" {
+				if !strings.Contains(string(data), "--stale-only: the summary covers the 1 of 1 packages shown") {
+					t.Fatalf("missing stale-only note: %s", data)
 				}
 				return
 			}
@@ -512,5 +519,65 @@ func TestStaleKEVCacheIsUsefulButIncomplete(t *testing.T) {
 	catalog, err := loadStaleCacheOrError(path, fmt.Errorf("service unavailable"))
 	if err == nil || len(catalog) != 1 {
 		t.Fatalf("stale data must retain findings with an explicit refresh error: %v, %v", catalog, err)
+	}
+}
+
+// Keep NVD pacing and retries instant in tests; TestNVDRateLimitAndRetry
+// checks the real behaviour with a fake clock.
+func init() {
+	nvdSleep = func(time.Duration) {}
+	nvdWindow = 0
+}
+
+func TestNVDRateLimitAndRetry(t *testing.T) {
+	oldWindow, oldSleep, oldNow := nvdWindow, nvdSleep, nvdNow
+	t.Cleanup(func() { nvdWindow, nvdSleep, nvdNow = oldWindow, oldSleep, oldNow; nvdRequestTimes = nil })
+	clock := time.Unix(0, 0)
+	var slept []time.Duration
+	nvdWindow = 30 * time.Second
+	nvdNow = func() time.Time { return clock }
+	nvdSleep = func(d time.Duration) { slept = append(slept, d); clock = clock.Add(d) }
+	nvdRequestTimes = nil
+
+	// Six requests without a key: the sixth waits for the window to clear.
+	for i := 0; i < 6; i++ {
+		nvdWait()
+	}
+	if len(slept) != 1 || slept[0] != 30*time.Second {
+		t.Fatalf("expected one 30s wait, got %v", slept)
+	}
+	t.Setenv("NVD_API_KEY", "key")
+	if nvdRequestLimit() != 50 {
+		t.Fatal("API key limit not applied")
+	}
+
+	// 429 and 503 are retried; the API key is sent; the last answer is returned.
+	nvdRequestTimes, slept = nil, nil
+	calls := 0
+	mockHTTP(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.Header.Get("apiKey") != "key" {
+			t.Errorf("API key not sent")
+		}
+		switch calls {
+		case 1:
+			return response(429, ""), nil
+		case 2:
+			return nil, errors.New("reset")
+		case 3:
+			return response(503, ""), nil
+		}
+		return response(200, `{"vulnerabilities":[{"cve":{"metrics":{"cvssMetricV40":[{"cvssData":{"baseScore":8.7}}]}}}]}`), nil
+	})
+	t.Setenv("DEP_TRACKER_CACHE_DIR", t.TempDir())
+	nvdCacheOnce = sync.Once{}
+	if score, err := QueryNVD("CVE-2026-40000"); err != nil || score != 8.7 || calls != 4 {
+		t.Fatalf("retry or v4 score failed: %v %v calls=%d", score, err, calls)
+	}
+	calls = 0
+	mockHTTP(t, func(r *http.Request) (*http.Response, error) { calls++; return response(429, ""), nil })
+	nvdCacheOnce = sync.Once{}
+	if _, err := QueryNVD("CVE-2026-40001"); err == nil || calls != nvdMaxAttempts {
+		t.Fatalf("persistent rate limiting accepted: %v calls=%d", err, calls)
 	}
 }

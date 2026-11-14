@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -11,11 +12,12 @@ import (
 )
 
 type CycloneDXSBOM struct {
-	BOMFormat   string          `json:"bomFormat"`
-	SpecVersion string          `json:"specVersion"`
-	Version     int             `json:"version"`
-	Metadata    SBOMMetadata    `json:"metadata"`
-	Components  []SBOMComponent `json:"components"`
+	BOMFormat    string          `json:"bomFormat"`
+	SpecVersion  string          `json:"specVersion"`
+	SerialNumber string          `json:"serialNumber"`
+	Version      int             `json:"version"`
+	Metadata     SBOMMetadata    `json:"metadata"`
+	Components   []SBOMComponent `json:"components"`
 }
 
 type SBOMMetadata struct {
@@ -27,6 +29,7 @@ type SBOMMetadata struct {
 }
 
 type SBOMComponent struct {
+	BOMRef     string         `json:"bom-ref"`
 	Type       string         `json:"type"`
 	Name       string         `json:"name"`
 	Version    string         `json:"version,omitempty"`
@@ -41,14 +44,16 @@ type SBOMProperty struct {
 
 func GenerateSBOM(results []ScanResult, outputPath string) error {
 	sbom := CycloneDXSBOM{
-		BOMFormat:   "CycloneDX",
-		SpecVersion: "1.4",
-		Version:     1,
-		Components:  []SBOMComponent{},
+		BOMFormat:    "CycloneDX",
+		SpecVersion:  "1.4",
+		SerialNumber: newSerialNumber(),
+		Version:      1,
+		Components:   []SBOMComponent{},
 		Metadata: SBOMMetadata{
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		},
 	}
+	usedRefs := make(map[string]int)
 	sbom.Metadata.Tools = append(sbom.Metadata.Tools, struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
@@ -61,6 +66,17 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 			Version: r.Pkg.Version,
 			PURL:    buildPURL(r.Pkg),
 		}
+		// bom-ref must be unique; the same package can appear in several
+		// projects of one scan.
+		ref := comp.PURL
+		if ref == "" {
+			ref = r.Pkg.Ecosystem + ":" + r.Pkg.Name + "@" + r.Pkg.Version
+		}
+		usedRefs[ref]++
+		if n := usedRefs[ref]; n > 1 {
+			ref = fmt.Sprintf("%s#%d", ref, n)
+		}
+		comp.BOMRef = ref
 
 		if validateQueryVersion(r.Pkg) != nil {
 			comp.Version = ""
@@ -99,7 +115,7 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 		for _, v := range r.Vulnerabilities {
 			comp.Properties = append(comp.Properties, SBOMProperty{
 				Name:  "vuln:cveID",
-				Value: fmt.Sprintf("%s (CVSS:%.1f EPSS:%s)", v.CVEID, v.CVSS, v.epssDisplay()),
+				Value: fmt.Sprintf("%s (CVSS:%s EPSS:%s)", v.CVEID, v.cvssDisplay(), v.epssDisplay()),
 			})
 			if v.FixedVersion != "" {
 				comp.Properties = append(comp.Properties, SBOMProperty{
@@ -127,6 +143,15 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 	return os.WriteFile(outputPath, data, 0644)
 }
 
+// newSerialNumber returns a random (version 4) UUID URN, as CycloneDX expects.
+func newSerialNumber() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("urn:uuid:%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 func buildPURL(pkg Package) string {
 	if validateQueryVersion(pkg) != nil {
 		return ""
@@ -146,7 +171,8 @@ func buildPURL(pkg Package) string {
 	case "npm":
 		return fmt.Sprintf("pkg:npm/%s@%s", name, version)
 	case "PyPI":
-		return fmt.Sprintf("pkg:pypi/%s@%s", name, version)
+		// The PURL spec requires lowercase PyPI names with "_" as "-".
+		return fmt.Sprintf("pkg:pypi/%s@%s", strings.ReplaceAll(strings.ToLower(name), "_", "-"), version)
 	case "Maven":
 		return fmt.Sprintf("pkg:maven/%s@%s", name, version)
 	case "NuGet":

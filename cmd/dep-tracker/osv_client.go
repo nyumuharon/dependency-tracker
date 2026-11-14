@@ -32,6 +32,7 @@ type Vulnerability struct {
 	CVEID         string
 	Summary       string
 	CVSS          float64
+	Severity      string // advisory database rating (LOW to CRITICAL); ranks an advisory only when CVSS is unknown
 	ID            string
 	EPSS          float64
 	EPSSKnown     bool
@@ -78,19 +79,28 @@ type osvResponse struct {
 	Vulns []osvVulnerability `json:"vulns"`
 }
 type osvVulnerability struct {
-	ID       string   `json:"id"`
-	Aliases  []string `json:"aliases"`
-	Summary  string   `json:"summary"`
-	Details  string   `json:"details"`
-	Severity []struct {
+	ID        string   `json:"id"`
+	Aliases   []string `json:"aliases"`
+	Withdrawn string   `json:"withdrawn"`
+	Summary   string   `json:"summary"`
+	Details   string   `json:"details"`
+	Severity  []struct {
 		Type  string `json:"type"`
 		Score string `json:"score"`
 	} `json:"severity"`
+	DatabaseSpecific struct {
+		Severity any `json:"severity"`
+	} `json:"database_specific"`
 	Affected []struct {
 		Package struct {
 			Name      string `json:"name"`
 			Ecosystem string `json:"ecosystem"`
 		} `json:"package"`
+		DatabaseSpecific struct {
+			// RustSec marks notices that are not vulnerabilities, such as
+			// "unmaintained", as informational.
+			Informational string `json:"informational"`
+		} `json:"database_specific"`
 		Ranges []struct {
 			Type   string `json:"type"`
 			Events []struct {
@@ -119,8 +129,7 @@ func fixedRelease(v osvVulnerability, pkg Package) string {
 			inRange := false
 			for _, ev := range r.Events {
 				if ev.Introduced != "" {
-					cmp, ok := compareVersions(pkg.Version, ev.Introduced, pkg.Ecosystem)
-					inRange = ev.Introduced == "0" || (ok && cmp >= 0)
+					inRange = atOrAfterIntroduced(pkg.Version, ev.Introduced, pkg.Ecosystem)
 				}
 				if ev.Fixed != "" {
 					cmp, ok := compareVersions(pkg.Version, ev.Fixed, pkg.Ecosystem)
@@ -142,6 +151,26 @@ func fixedRelease(v osvVulnerability, pkg Package) string {
 	return best
 }
 
+// atOrAfterIntroduced reports whether version is at or after an introduced
+// event. A qualifier such as "2.0-beta9" orders versions only within one
+// numeric release, so when the qualified form cannot be ordered, a version
+// whose numeric release is strictly greater is still known to be later.
+// Versions sharing the numeric release are left undecided.
+func atOrAfterIntroduced(version, introduced, ecosystem string) bool {
+	if introduced == "0" {
+		return true
+	}
+	if cmp, ok := compareVersions(version, introduced, ecosystem); ok {
+		return cmp >= 0
+	}
+	i := strings.IndexAny(introduced, "-+")
+	if i <= 0 {
+		return false
+	}
+	cmp, ok := compareVersions(version, introduced[:i], ecosystem)
+	return ok && cmp > 0
+}
+
 type osvBatchQuery struct {
 	Queries []osvQuery `json:"queries"`
 }
@@ -156,7 +185,11 @@ func parseVulns(res osvResponse, pkg Package) []Vulnerability {
 	}
 
 	var vulns []Vulnerability
+	var vulnIDs [][]string // each advisory's ID and aliases, for merging
 	for _, v := range res.Vulns {
+		if v.Withdrawn != "" || isInformationalNotice(v, pkg) {
+			continue
+		}
 		summary := v.Summary
 		if summary == "" && v.Details != "" {
 			firstLine := strings.Split(v.Details, "\n")[0]
@@ -169,6 +202,10 @@ func parseVulns(res osvResponse, pkg Package) []Vulnerability {
 			ID:           v.ID,
 			Summary:      summary,
 			FixedVersion: fixedVersion,
+		}
+
+		if label, ok := v.DatabaseSpecific.Severity.(string); ok {
+			vuln.Severity = normalizeSeverityLabel(label)
 		}
 
 		// Prefer a CVE alias over the OSV/GHSA ID
@@ -193,17 +230,41 @@ func parseVulns(res osvResponse, pkg Package) []Vulnerability {
 		}
 
 		vulns = append(vulns, vuln)
+		vulnIDs = append(vulnIDs, append([]string{v.ID, vuln.CVEID}, v.Aliases...))
 	}
 
-	// Deduplicate advisories that share the same CVE ID (e.g., GHSA + PYSEC for the same CVE),
-	// merging CVSS, FixedVersion, and Summary so the richest metadata is preserved.
+	// Merge advisories that describe the same vulnerability: they share a CVE
+	// or one lists the other as an alias (GHSA + PYSEC, RUSTSEC + GHSA). The
+	// richest metadata is kept.
 	var deduped []Vulnerability
-	idxByCVE := make(map[string]int)
-	for _, v := range vulns {
-		if existingIdx, exists := idxByCVE[v.CVEID]; exists {
+	idxByID := make(map[string]int)
+	for i, v := range vulns {
+		existingIdx, exists := -1, false
+		for _, id := range vulnIDs[i] {
+			if idx, ok := idxByID[id]; ok {
+				existingIdx, exists = idx, true
+				break
+			}
+		}
+		if !exists {
+			existingIdx = len(deduped)
+			deduped = append(deduped, v)
+		}
+		for _, id := range vulnIDs[i] {
+			if _, ok := idxByID[id]; !ok {
+				idxByID[id] = existingIdx
+			}
+		}
+		if exists {
 			ex := &deduped[existingIdx]
+			if !strings.HasPrefix(ex.CVEID, "CVE-") && strings.HasPrefix(v.CVEID, "CVE-") {
+				ex.CVEID = v.CVEID
+			}
 			if v.CVSS > ex.CVSS {
 				ex.CVSS = v.CVSS
+			}
+			if severityLabelScore(v.Severity) > severityLabelScore(ex.Severity) {
+				ex.Severity = v.Severity
 			}
 			if ex.FixedVersion == "" && v.FixedVersion != "" {
 				ex.FixedVersion = v.FixedVersion
@@ -211,13 +272,26 @@ func parseVulns(res osvResponse, pkg Package) []Vulnerability {
 			if ex.Summary == "" && v.Summary != "" {
 				ex.Summary = v.Summary
 			}
-			continue
 		}
-		idxByCVE[v.CVEID] = len(deduped)
-		deduped = append(deduped, v)
 	}
 
 	return deduped
+}
+
+// isInformationalNotice reports RustSec notices that are not vulnerabilities:
+// "unmaintained" crates and general notices. "unsound" notices describe
+// memory-safety problems and stay.
+func isInformationalNotice(v osvVulnerability, pkg Package) bool {
+	for _, aff := range v.Affected {
+		if aff.Package.Name != pkg.Name || aff.Package.Ecosystem != pkg.Ecosystem {
+			continue
+		}
+		switch strings.ToLower(aff.DatabaseSpecific.Informational) {
+		case "unmaintained", "notice":
+			return true
+		}
+	}
+	return false
 }
 
 func QueryOSVBatch(packages []Package) (map[string][]Vulnerability, error) {

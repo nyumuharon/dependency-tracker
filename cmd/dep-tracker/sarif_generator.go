@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,11 +61,12 @@ type SARIFConfiguration struct {
 }
 
 type SARIFResult struct {
-	RuleID    string          `json:"ruleId"`
-	RuleIndex int             `json:"ruleIndex"`
-	Level     string          `json:"level"`
-	Message   SARIFMessage    `json:"message"`
-	Locations []SARIFLocation `json:"locations,omitempty"`
+	RuleID              string            `json:"ruleId"`
+	RuleIndex           int               `json:"ruleIndex"`
+	Level               string            `json:"level"`
+	Message             SARIFMessage      `json:"message"`
+	Locations           []SARIFLocation   `json:"locations,omitempty"`
+	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
 }
 
 type SARIFLocation struct {
@@ -123,17 +125,7 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 				invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications, SARIFNotification{Level: "error", Message: SARIFMessage{Text: r.Pkg.Name + ": " + msg}})
 			}
 		}
-		// Determine manifest file URI
-		manifestURI := r.Pkg.ManifestPath
-		if manifestURI == "" {
-			manifestURI = "manifest"
-		}
-		// Convert to relative path if possible for GitHub Actions compatibility
-		if cwd, err := workingDirectory(); err == nil {
-			if rel, err := filepath.Rel(cwd, manifestURI); err == nil && !strings.HasPrefix(rel, "..") {
-				manifestURI = rel
-			}
-		}
+		artifact := sarifArtifact(r.Pkg.ManifestPath, workingDirectory)
 
 		for _, v := range r.Vulnerabilities {
 			ruleID := v.CVEID
@@ -147,59 +139,58 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 				rIdx = len(report.Runs[0].Tool.Driver.Rules)
 				ruleIndexMap[ruleID] = rIdx
 
-				// Map severity level
+				// A rule describes the vulnerability. The affected package and
+				// version belong to each result, since several packages can
+				// share one rule.
 				level := "warning"
-				secSeverity := fmt.Sprintf("%.1f", v.CVSS)
-				if v.IsKEV || v.CVSS >= 7.0 {
-					level = "error"
-					if v.IsKEV && v.CVSS < 9.0 {
+				severity := v.severityScore()
+				properties := map[string]interface{}{
+					"tags":      []string{"security", "dependency"},
+					"precision": "very-high",
+				}
+				// security-severity is omitted, rather than reported as 0.0,
+				// when no severity is known.
+				if severity > 0 || v.IsKEV {
+					secSeverity := fmt.Sprintf("%.1f", severity)
+					if v.IsKEV && severity < 9.0 {
 						secSeverity = "10.0"
 					}
-				} else if v.CVSS < 4.0 && v.CVSS > 0 {
+					properties["security-severity"] = secSeverity
+				}
+				if v.IsKEV || severity >= 7.0 {
+					level = "error"
+				} else if severity < 4.0 && severity > 0 {
 					level = "note"
 				}
-
-				tags := []string{"security", "dependency", r.Pkg.Ecosystem}
 				if v.IsKEV {
-					tags = append(tags, "cisa-kev")
+					properties["tags"] = []string{"security", "dependency", "cisa-kev"}
 				}
 
-				helpText := fmt.Sprintf("Package: %s (%s)\nInstalled Version: %s\nCVSS: %.1f | EPSS: %s\n",
-					r.Pkg.Name, r.Pkg.Ecosystem, r.Pkg.Version, v.CVSS, v.epssDisplay())
-				if v.FixedVersion != "" {
-					helpText += fmt.Sprintf("Fixed release: %s (verify branch compatibility)\n", v.FixedVersion)
-				}
+				helpText := fmt.Sprintf("Vulnerability: %s\nCVSS: %s | EPSS: %s\n", ruleID, v.cvssDisplay(), v.epssDisplay())
+				helpMarkdown := fmt.Sprintf("### Vulnerability Details\n\n"+
+					"- **Vulnerability ID**: `%s`\n"+
+					"- **CVSS Base Score**: `%s`\n"+
+					"- **EPSS Exploit Probability**: `%s`\n",
+					ruleID, v.cvssDisplay(), v.epssDisplay())
 				if v.IsKEV {
 					helpText += "Warning: Listed in CISA Known Exploited Vulnerabilities (KEV) catalog!\n"
-				}
-
-				helpMarkdown := fmt.Sprintf("### Vulnerability Details\n\n"+
-					"- **Package**: `%s` (%s)\n"+
-					"- **Installed Version**: `%s`\n"+
-					"- **Vulnerability ID**: `%s`\n"+
-					"- **CVSS Base Score**: `%.1f`\n"+
-					"- **EPSS Exploit Probability**: `%s`\n",
-					r.Pkg.Name, r.Pkg.Ecosystem, r.Pkg.Version, ruleID, v.CVSS, v.epssDisplay())
-
-				if v.FixedVersion != "" {
-					helpMarkdown += fmt.Sprintf("- **Remediation**: Fixed release `%s` (verify branch compatibility)\n", v.FixedVersion)
-				}
-				if v.IsKEV {
 					helpMarkdown += "\n**CISA KEV ALERT**: This vulnerability is actively exploited in the wild.\n"
 				}
 				if v.Summary != "" {
 					helpMarkdown += fmt.Sprintf("\n**Summary**: %s\n", v.Summary)
 				}
+				helpText += "Affected packages, versions and fixed releases are listed on each result.\n"
+				helpMarkdown += "\nAffected packages, versions and fixed releases are listed on each result.\n"
 
+				shortText := ruleID
+				if v.Summary != "" {
+					shortText = ruleID + ": " + v.Summary
+				}
 				rule := SARIFRule{
-					ID:   ruleID,
-					Name: "DependencyVulnerability",
-					ShortDescription: SARIFMessage{
-						Text: fmt.Sprintf("%s in %s@%s", ruleID, r.Pkg.Name, r.Pkg.Version),
-					},
-					FullDescription: SARIFMessage{
-						Text: v.Summary,
-					},
+					ID:               ruleID,
+					Name:             "DependencyVulnerability",
+					ShortDescription: SARIFMessage{Text: shortText},
+					FullDescription:  SARIFMessage{Text: v.Summary},
 					Help: SARIFHelp{
 						Text:     helpText,
 						Markdown: helpMarkdown,
@@ -207,11 +198,7 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 					DefaultConfiguration: SARIFConfiguration{
 						Level: level,
 					},
-					Properties: map[string]interface{}{
-						"tags":              tags,
-						"security-severity": secSeverity,
-						"precision":         "very-high",
-					},
+					Properties: properties,
 				}
 
 				report.Runs[0].Tool.Driver.Rules = append(report.Runs[0].Tool.Driver.Rules, rule)
@@ -219,14 +206,14 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 
 			// Determine result level
 			resLevel := "warning"
-			if v.IsKEV || v.CVSS >= 7.0 {
+			if severity := v.severityScore(); v.IsKEV || severity >= 7.0 {
 				resLevel = "error"
-			} else if v.CVSS < 4.0 && v.CVSS > 0 {
+			} else if severity < 4.0 && severity > 0 {
 				resLevel = "note"
 			}
 
-			messageText := fmt.Sprintf("Dependency %s@%s contains %s (CVSS %.1f, EPSS %s).",
-				r.Pkg.Name, r.Pkg.Version, ruleID, v.CVSS, v.epssDisplay())
+			messageText := fmt.Sprintf("Dependency %s@%s contains %s (CVSS %s, EPSS %s).",
+				r.Pkg.Name, r.Pkg.Version, ruleID, v.cvssDisplay(), v.epssDisplay())
 			if v.FixedVersion != "" {
 				messageText += fmt.Sprintf(" Fixed release: %s (verify branch compatibility).", v.FixedVersion)
 			}
@@ -244,15 +231,17 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 				Locations: []SARIFLocation{
 					{
 						PhysicalLocation: SARIFPhysicalLocation{
-							ArtifactLocation: SARIFArtifactLocation{
-								URI:       filepath.ToSlash(manifestURI),
-								URIBaseID: "%SRCROOT%",
-							},
+							ArtifactLocation: artifact,
 							Region: SARIFRegion{
 								StartLine: 1,
 							},
 						},
 					},
+				},
+				// Every finding points at line 1 of its manifest, so the package
+				// identity keeps separate findings apart.
+				PartialFingerprints: map[string]string{
+					"dependencyFinding/v1": strings.Join([]string{r.Pkg.Ecosystem, r.Pkg.Name, r.Pkg.Version, ruleID}, "|"),
 				},
 			}
 
@@ -268,4 +257,54 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 		return err
 	}
 	return os.WriteFile(outputPath, data, 0644)
+}
+
+// sarifArtifact locates a manifest for code scanning. Paths inside a Git
+// repository are made relative to its root (%SRCROOT%), so they match the
+// repository files whichever directory was scanned. Other paths are relative
+// to the working directory when they lie below it, and absolute file URIs
+// otherwise.
+func sarifArtifact(manifestPath string, workingDirectory func() (string, error)) SARIFArtifactLocation {
+	if manifestPath == "" {
+		return SARIFArtifactLocation{URI: "manifest", URIBaseID: "%SRCROOT%"}
+	}
+	below := func(base, path string) (string, bool) {
+		rel, err := filepath.Rel(base, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return "", false
+		}
+		return filepath.ToSlash(rel), true
+	}
+	abs := manifestPath
+	if resolved, err := filepath.Abs(manifestPath); err == nil {
+		abs = resolved
+	}
+	if repo := gitRepositoryRoot(filepath.Dir(abs)); repo != "" {
+		if rel, ok := below(repo, abs); ok {
+			return SARIFArtifactLocation{URI: rel, URIBaseID: "%SRCROOT%"}
+		}
+	}
+	if cwd, err := workingDirectory(); err == nil {
+		if cwdAbs, err := filepath.Abs(cwd); err == nil {
+			if rel, ok := below(cwdAbs, abs); ok {
+				return SARIFArtifactLocation{URI: rel, URIBaseID: "%SRCROOT%"}
+			}
+		}
+	}
+	return SARIFArtifactLocation{URI: (&url.URL{Scheme: "file", Path: "/" + strings.TrimPrefix(filepath.ToSlash(abs), "/")}).String()}
+}
+
+// gitRepositoryRoot returns the nearest directory at or above dir that
+// contains .git, or "" when there is none.
+func gitRepositoryRoot(dir string) string {
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }

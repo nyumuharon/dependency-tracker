@@ -115,7 +115,7 @@ func TestRegistryUnknownDateVariants(t *testing.T) {
 		{"npm", "example", `{"dist-tags":{"latest":"1.0.0"},"time":{}}`},
 		{"NuGet", "example", `{"items":[{"upper":"1.0.0","items":[]}]}`},
 		{"NuGet", "example", `{"items":[{"items":[{"catalogEntry":{"version":"1.0.0","published":"bad"}}]}]}`},
-		{"Maven", "org.example:library", `{"response":{"docs":[{"latestVersion":"1.0.0"}]}}`},
+		{"Maven", "org.example:library", `{"response":{"docs":[{"v":"1.0.0"}]}}`},
 		{"crates.io", "example", `{"crate":{"max_version":"1.0.0","updated_at":"bad"}}`},
 		{"Packagist", "example/example", `{"packages":{"example/example":[{"version":"1.0.0","time":"bad"}]}}`},
 		{"RubyGems", "example", `{"version":"1.0.0","version_created_at":"bad"}`},

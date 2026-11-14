@@ -15,21 +15,68 @@ import (
 	"strings"
 )
 
-var skipDirs = map[string]bool{
-	".git":         true,
+// alwaysSkipDirs are never project sources: VCS data, editor settings,
+// installed dependencies (inspected separately) and test fixtures.
+var alwaysSkipDirs = map[string]bool{
 	"node_modules": true,
 	"vendor":       true,
 	".venv":        true,
 	"venv":         true,
-	"env":          true,
-	"target":       true,
-	"bin":          true,
 	"obj":          true,
-	"dist":         true,
-	"build":        true,
-	".idea":        true,
-	".vscode":      true,
 	"testdata":     true,
+}
+
+// buildOutputDirs hold generated output when they sit beside a project's
+// dependency file. Elsewhere they are ordinary folders (a top-level build/
+// tool, an app called target/) and are scanned.
+var buildOutputDirs = map[string]bool{
+	"target": true,
+	"bin":    true,
+	"dist":   true,
+	"build":  true,
+}
+
+// isVirtualEnv reports whether dir is a Python virtual environment, whatever
+// its name.
+func isVirtualEnv(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "pyvenv.cfg"))
+	return err == nil
+}
+
+// isBuildOutputDir reports whether dir is the output folder of a project
+// declared in its parent directory.
+func isBuildOutputDir(dir string) bool {
+	// An unreadable parent has no visible manifest, so the folder is scanned.
+	entries, _ := os.ReadDir(filepath.Dir(dir))
+	for _, e := range entries {
+		if !e.IsDir() && isCandidateDependencyFile(e.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
+// continueAfterWalkError keeps a walk going after a recorded error: an
+// unreadable directory is skipped, and anything else needs no special step.
+func continueAfterWalkError(d os.DirEntry) error {
+	if d != nil && d.IsDir() {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+// skipSourceDir decides whether a directory below rootDir is skipped when
+// looking for manifests and source imports. The scan root itself is never
+// skipped, whatever its name.
+func skipSourceDir(path, rootDir string) bool {
+	if filepath.Clean(path) == filepath.Clean(rootDir) {
+		return false
+	}
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, ".") || alwaysSkipDirs[name] || isVirtualEnv(path) {
+		return true
+	}
+	return buildOutputDirs[name] && isBuildOutputDir(path)
 }
 
 // IsManifestFile returns true if fileName is a recognized dependency manifest or lockfile.
@@ -64,105 +111,51 @@ func IsManifestFile(fileName string) bool {
 	}
 }
 
+// lockfileNames are files that record exact resolved versions. A lockfile is
+// preferred over the manifests of the same ecosystem in its directory, except
+// for Go, where go.mod is authoritative and go.sum also lists old versions.
+var lockfileNames = map[string]bool{
+	"package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true,
+	"poetry.lock": true, "pipfile.lock": true, "uv.lock": true, "pdm.lock": true,
+	"go.sum": true, "cargo.lock": true, "composer.lock": true, "gemfile.lock": true,
+	"packages.lock.json": true, "paket.lock": true, "conan.lock": true,
+	"pubspec.lock": true, "mix.lock": true, "package.resolved": true, "gradle.lockfile": true,
+}
+
 // filterDirManifests selects the best manifests in a directory (prioritizing lockfiles over loose manifests).
 func filterDirManifests(paths []string) []string {
-	var npmLocks, npmManifests []string
-	var pyLocks, pyManifests []string
-	var goLocks, goManifests []string
-	var rustLocks, rustManifests []string
-	var phpLocks, phpManifests []string
-	var conanLocks, conanManifests []string
-	var vcpkgManifests []string
-	var otherManifests []string
-
+	hasLock := make(map[string]bool)
 	for _, p := range paths {
-		base := filepath.Base(p)
-		switch {
-		case strings.HasSuffix(base, "package-lock.json"),
-			strings.HasSuffix(base, "yarn.lock"),
-			strings.HasSuffix(base, "pnpm-lock.yaml"):
-			npmLocks = append(npmLocks, p)
-		case strings.HasSuffix(base, "package.json"):
-			npmManifests = append(npmManifests, p)
-
-		case strings.HasSuffix(base, "poetry.lock"),
-			strings.HasSuffix(base, "Pipfile.lock"),
-			strings.HasSuffix(base, "uv.lock"):
-			pyLocks = append(pyLocks, p)
-		case strings.HasSuffix(base, "requirements.txt"),
-			strings.HasSuffix(base, "pyproject.toml"):
-			pyManifests = append(pyManifests, p)
-
-		case strings.HasSuffix(base, "go.sum"):
-			goLocks = append(goLocks, p)
-		case strings.HasSuffix(base, "go.mod"):
-			goManifests = append(goManifests, p)
-
-		case strings.HasSuffix(base, "Cargo.lock"):
-			rustLocks = append(rustLocks, p)
-		case strings.HasSuffix(base, "Cargo.toml"):
-			rustManifests = append(rustManifests, p)
-
-		case strings.HasSuffix(base, "composer.lock"):
-			phpLocks = append(phpLocks, p)
-		case strings.HasSuffix(base, "composer.json"):
-			phpManifests = append(phpManifests, p)
-
-		case strings.HasSuffix(base, "conan.lock"):
-			conanLocks = append(conanLocks, p)
-		case strings.HasSuffix(base, "conanfile.txt"):
-			conanManifests = append(conanManifests, p)
-
-		case strings.HasSuffix(base, "vcpkg.json"):
-			vcpkgManifests = append(vcpkgManifests, p)
-
-		default:
-			otherManifests = append(otherManifests, p)
+		if base := strings.ToLower(filepath.Base(p)); lockfileNames[base] {
+			hasLock[dependencyFileEcosystem(p)] = true
 		}
 	}
-
 	var selected []string
-
-	// If lockfiles exist for an ecosystem in this folder, prefer lockfiles; otherwise take manifests
-	if len(npmLocks) > 0 {
-		selected = append(selected, npmLocks...)
-	} else {
-		selected = append(selected, npmManifests...)
+	for _, p := range paths {
+		base := strings.ToLower(filepath.Base(p))
+		eco := dependencyFileEcosystem(p)
+		switch {
+		case eco == "" || base == "vcpkg.json" || base == "cmakelists.txt":
+			// Unrecognised names, and vcpkg/CMake, which no Conan lock covers.
+			selected = append(selected, p)
+		case eco == "Go":
+			if base != "go.sum" || !hasGoMod(paths) {
+				selected = append(selected, p)
+			}
+		case lockfileNames[base] || !hasLock[eco]:
+			selected = append(selected, p)
+		}
 	}
-
-	if len(pyLocks) > 0 {
-		selected = append(selected, pyLocks...)
-	} else {
-		selected = append(selected, pyManifests...)
-	}
-
-	if len(goManifests) > 0 {
-		selected = append(selected, goManifests...)
-	} else {
-		selected = append(selected, goLocks...)
-	}
-
-	if len(rustLocks) > 0 {
-		selected = append(selected, rustLocks...)
-	} else {
-		selected = append(selected, rustManifests...)
-	}
-
-	if len(phpLocks) > 0 {
-		selected = append(selected, phpLocks...)
-	} else {
-		selected = append(selected, phpManifests...)
-	}
-
-	if len(conanLocks) > 0 {
-		selected = append(selected, conanLocks...)
-	} else {
-		selected = append(selected, conanManifests...)
-	}
-
-	selected = append(selected, vcpkgManifests...)
-	selected = append(selected, otherManifests...)
 	return selected
+}
+
+func hasGoMod(paths []string) bool {
+	for _, p := range paths {
+		if strings.EqualFold(filepath.Base(p), "go.mod") {
+			return true
+		}
+	}
+	return false
 }
 
 // FindManifests recursively walks rootDir and returns all discovered dependency manifests/lockfiles.
@@ -174,8 +167,7 @@ func FindManifests(rootDir string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			name := d.Name()
-			if skipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
+			if skipSourceDir(path, rootDir) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -210,17 +202,19 @@ func ParsePath(targetPath string) ([]Package, error) {
 	if fi.IsDir() {
 		fmt.Fprintf(os.Stderr, "Discovering dependency manifests in directory: %s\n", targetPath)
 		pkgs, sources, err := DiscoverDependencies(targetPath)
+		if err == nil && len(sources) == 0 && len(pkgs) == 0 {
+			return nil, fmt.Errorf("no dependencies, manifests, environments, or imports found in directory: %s", targetPath)
+		}
+		if len(sources) > 0 {
+			fmt.Fprintf(os.Stderr, "Discovered %d dependency source(s):\n", len(sources))
+			for _, s := range sources {
+				fmt.Fprintf(os.Stderr, "  • %s\n", s)
+			}
+			fmt.Fprintln(os.Stderr)
+		}
 		if err != nil {
 			return pkgs, fmt.Errorf("project discovery failed: %w", err)
 		}
-		if len(sources) == 0 && len(pkgs) == 0 {
-			return nil, fmt.Errorf("no dependencies, manifests, environments, or imports found in directory: %s", targetPath)
-		}
-		fmt.Fprintf(os.Stderr, "Discovered %d dependency source(s):\n", len(sources))
-		for _, s := range sources {
-			fmt.Fprintf(os.Stderr, "  • %s\n", s)
-		}
-		fmt.Fprintln(os.Stderr)
 		return pkgs, nil
 	}
 
@@ -360,26 +354,28 @@ func parseNPM(filePath string) ([]Package, error) {
 		return nil, err
 	}
 	var manifest struct {
-		Dependencies    map[string]string `json:"dependencies"`
-		DevDependencies map[string]string `json:"devDependencies"`
+		Dependencies         map[string]string `json:"dependencies"`
+		DevDependencies      map[string]string `json:"devDependencies"`
+		OptionalDependencies map[string]string `json:"optionalDependencies"`
 	}
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, fmt.Errorf("invalid package.json: %w", err)
 	}
 	var pkgs []Package
-	for name, version := range manifest.Dependencies {
-		pkgs = append(pkgs, Package{
-			Name:      name,
-			Version:   cleanNPMVersion(version),
-			Ecosystem: "npm",
-		})
-	}
-	for name, version := range manifest.DevDependencies {
-		pkgs = append(pkgs, Package{
-			Name:      name,
-			Version:   cleanNPMVersion(version),
-			Ecosystem: "npm",
-		})
+	// npm installs optional dependencies whenever they build on the platform.
+	for _, deps := range []map[string]string{manifest.Dependencies, manifest.DevDependencies, manifest.OptionalDependencies} {
+		for name, version := range deps {
+			version = cleanNPMVersion(version)
+			// "alias": "npm:real-package@^1.0.0" installs real-package.
+			if real, rng := splitNPMSpec(strings.TrimPrefix(version, "npm:")); strings.HasPrefix(version, "npm:") && rng != "" {
+				name, version = real, rng
+			}
+			pkgs = append(pkgs, Package{
+				Name:      name,
+				Version:   version,
+				Ecosystem: "npm",
+			})
+		}
 	}
 	return pkgs, nil
 }
@@ -391,21 +387,76 @@ func cleanNPMVersion(v string) string {
 // ── PyPI (requirements.txt) ───────────────────────────────────────────────────
 
 func parsePyPI(filePath string) ([]Package, error) {
-	f, err := os.Open(filePath)
+	return parseRequirementsFile(filePath, map[string]bool{})
+}
+
+// parseRequirementsFile reads a pip requirements file. It joins backslash
+// continuations, drops per-requirement options such as --hash, and follows
+// -r/--requirement includes relative to the including file. Constraint files
+// (-c) only restrict versions and declare no dependencies, so they are skipped.
+func parseRequirementsFile(filePath string, visited map[string]bool) ([]Package, error) {
+	key := filePath
+	if abs, err := filepath.Abs(filePath); err == nil {
+		key = abs
+	}
+	if visited[key] {
+		return nil, nil
+	}
+	visited[key] = true
+	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 
 	var pkgs []Package
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
+	var logical []string
+	var current strings.Builder
+	for _, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		if strings.HasSuffix(raw, "\\") {
+			current.WriteString(strings.TrimSuffix(raw, "\\"))
+			current.WriteString(" ")
+			continue
+		}
+		current.WriteString(raw)
+		logical = append(logical, current.String())
+		current.Reset()
+	}
+	for _, line := range logical {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		if idx := strings.Index(line, " #"); idx != -1 {
 			line = strings.TrimSpace(line[:idx])
+		}
+		if strings.HasPrefix(line, "-") {
+			fields := strings.Fields(strings.Replace(line, "=", " ", 1))
+			if len(fields) == 2 && (fields[0] == "-r" || fields[0] == "--requirement") {
+				included := fields[1]
+				if !filepath.IsAbs(included) {
+					included = filepath.Join(filepath.Dir(filePath), included)
+				}
+				sub, err := parseRequirementsFile(included, visited)
+				if err != nil {
+					return pkgs, fmt.Errorf("requirements include %s: %w", fields[1], err)
+				}
+				for _, p := range sub {
+					if p.ManifestPath == "" {
+						p.ManifestPath = included
+					}
+					pkgs = append(pkgs, p)
+				}
+			}
+			continue
+		}
+		// Per-requirement options (--hash, --config-settings, ...) follow the
+		// requirement itself.
+		if idx := strings.Index(line, " --"); idx != -1 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		// Local paths and bare URLs name no registry package.
+		if strings.HasPrefix(line, ".") || strings.HasPrefix(line, "/") || (strings.Contains(line, "://") && !strings.Contains(line, "@")) {
+			continue
 		}
 		name, ver := parsePEP508Spec(line)
 		if name != "" && ver != "" {
@@ -416,7 +467,7 @@ func parsePyPI(filePath string) ([]Package, error) {
 			})
 		}
 	}
-	return pkgs, scanner.Err()
+	return pkgs, nil
 }
 
 // ── Maven (pom.xml) ───────────────────────────────────────────────────────────
@@ -429,6 +480,7 @@ type mavenDep struct {
 	GroupID    string `xml:"groupId"`
 	ArtifactID string `xml:"artifactId"`
 	Version    string `xml:"version"`
+	Scope      string `xml:"scope"`
 }
 
 func parseMaven(filePath string) ([]Package, error) {
@@ -482,47 +534,87 @@ func parseGoMod(filePath string) ([]Package, error) {
 	}
 	defer f.Close()
 
-	var pkgs []Package
+	type goReplacement struct {
+		oldVersion, newPath, newVersion string
+	}
+	var required []Package
+	replacements := make(map[string][]goReplacement)
 	scanner := bufio.NewScanner(f)
-	inRequireBlock := false
+	block := ""
+
+	handle := func(directive string, fields []string) {
+		switch directive {
+		case "require":
+			if len(fields) >= 2 {
+				required = append(required, Package{Name: fields[0], Version: fields[1], Ecosystem: "Go"})
+			}
+		case "replace":
+			// old [v] => new [v]; a new path without a version is a local directory.
+			arrow := -1
+			for i, f := range fields {
+				if f == "=>" {
+					arrow = i
+				}
+			}
+			if arrow < 1 || arrow > 2 || len(fields) <= arrow+1 {
+				return
+			}
+			r := goReplacement{newPath: fields[arrow+1]}
+			if arrow == 2 {
+				r.oldVersion = fields[1]
+			}
+			if len(fields) > arrow+2 {
+				r.newVersion = fields[arrow+2]
+			}
+			replacements[fields[0]] = append(replacements[fields[0]], r)
+		}
+	}
 
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "//") {
+		line := scanner.Text()
+		if i := strings.Index(line, "//"); i != -1 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-
-		if line == "require (" {
-			inRequireBlock = true
-			continue
-		}
-
-		if inRequireBlock {
+		if block != "" {
 			if line == ")" {
-				inRequireBlock = false
+				block = ""
 				continue
 			}
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				pkgs = append(pkgs, Package{
-					Name:      parts[0],
-					Version:   parts[1],
-					Ecosystem: "Go",
-				})
-			}
+			handle(block, strings.Fields(line))
 			continue
 		}
+		fields := strings.Fields(strings.Replace(line, "(", " ( ", 1))
+		if len(fields) == 2 && fields[1] == "(" {
+			block = fields[0]
+			continue
+		}
+		if len(fields) > 1 {
+			handle(fields[0], fields[1:])
+		}
+	}
 
-		if strings.HasPrefix(line, "require ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				pkgs = append(pkgs, Package{
-					Name:      parts[1],
-					Version:   parts[2],
-					Ecosystem: "Go",
-				})
+	// A replace directive changes the module that is actually built, which is
+	// the one that must be checked. A version-specific replacement wins over a
+	// replacement of every version.
+	var pkgs []Package
+	for _, p := range required {
+		var chosen *goReplacement
+		for i, r := range replacements[p.Name] {
+			if r.oldVersion == p.Version || (r.oldVersion == "" && chosen == nil) {
+				chosen = &replacements[p.Name][i]
 			}
 		}
+		if chosen != nil {
+			if chosen.newVersion == "" {
+				continue // replaced by a local directory, not a published module
+			}
+			p.Name, p.Version = chosen.newPath, chosen.newVersion
+		}
+		pkgs = append(pkgs, p)
 	}
 	return pkgs, scanner.Err()
 }
@@ -538,35 +630,36 @@ func parseCargoLock(filePath string) ([]Package, error) {
 
 	var pkgs []Package
 	scanner := bufio.NewScanner(f)
-	var currentName, currentVersion string
+	var currentName, currentVersion, currentSource string
 
+	// Entries without a registry source are the workspace's own crates or path
+	// dependencies; a crates.io crate that happens to share the name is a
+	// different package.
+	flush := func() {
+		if currentName != "" && currentVersion != "" && (strings.HasPrefix(currentSource, "registry+") || strings.HasPrefix(currentSource, "sparse+")) {
+			pkgs = append(pkgs, Package{
+				Name:      currentName,
+				Version:   currentVersion,
+				Ecosystem: "crates.io",
+			})
+		}
+		currentName, currentVersion, currentSource = "", "", ""
+	}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "[[package]]" {
-			if currentName != "" && currentVersion != "" {
-				pkgs = append(pkgs, Package{
-					Name:      currentName,
-					Version:   currentVersion,
-					Ecosystem: "crates.io",
-				})
-			}
-			currentName = ""
-			currentVersion = ""
+		if strings.HasPrefix(line, "[") {
+			flush()
 			continue
 		}
 		if strings.HasPrefix(line, "name = ") {
 			currentName = strings.Trim(strings.TrimPrefix(line, "name = "), `"' `)
 		} else if strings.HasPrefix(line, "version = ") {
 			currentVersion = strings.Trim(strings.TrimPrefix(line, "version = "), `"' `)
+		} else if strings.HasPrefix(line, "source = ") {
+			currentSource = strings.Trim(strings.TrimPrefix(line, "source = "), `"' `)
 		}
 	}
-	if currentName != "" && currentVersion != "" {
-		pkgs = append(pkgs, Package{
-			Name:      currentName,
-			Version:   currentVersion,
-			Ecosystem: "crates.io",
-		})
-	}
+	flush()
 	return pkgs, scanner.Err()
 }
 
@@ -580,39 +673,17 @@ func parseCargoToml(filePath string) ([]Package, error) {
 	var pkgs []Package
 	scanner := bufio.NewScanner(f)
 	inDepSection := false
+	// A [dependencies.name] subtable describes one dependency over several lines.
+	subName, subVersion, subPackage, subLocal := "", "", "", false
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	add := func(key, version, packageName string, local bool) {
+		name := strings.Trim(key, `"' `)
+		if packageName != "" {
+			name = packageName // `alias = { package = "real-crate", ... }`
 		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			sec := strings.Trim(line, "[]")
-			inDepSection = (sec == "dependencies" || sec == "dev-dependencies" || sec == "build-dependencies")
-			continue
-		}
-		if !inDepSection {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		name := strings.TrimSpace(parts[0])
-		val := strings.TrimSpace(parts[1])
-		var version string
-		if strings.HasPrefix(val, "{") {
-			for _, sub := range strings.Split(strings.Trim(val, "{}"), ",") {
-				subParts := strings.SplitN(strings.TrimSpace(sub), "=", 2)
-				if len(subParts) == 2 && strings.TrimSpace(subParts[0]) == "version" {
-					version = strings.Trim(strings.TrimSpace(subParts[1]), `"' `)
-					break
-				}
-			}
-		} else {
-			version = strings.Trim(val, `"' `)
-		}
-		if name != "" && version != "" {
+		// Path and git dependencies are not crates.io releases; workspace = true
+		// inherits a version reported from [workspace.dependencies].
+		if name != "" && version != "" && !local {
 			pkgs = append(pkgs, Package{
 				Name:      name,
 				Version:   cleanNPMVersion(version),
@@ -620,6 +691,85 @@ func parseCargoToml(filePath string) ([]Package, error) {
 			})
 		}
 	}
+	flushSub := func() {
+		if subName != "" {
+			add(subName, subVersion, subPackage, subLocal)
+		}
+		subName, subVersion, subPackage, subLocal = "", "", "", false
+	}
+	isDepTable := func(sec string) bool {
+		// [dependencies], [dev-dependencies], [build-dependencies],
+		// [workspace.dependencies] and [target.'cfg(...)'.dependencies].
+		last := sec
+		if i := strings.LastIndex(sec, "."); i != -1 {
+			last = sec[i+1:]
+		}
+		return last == "dependencies" || last == "dev-dependencies" || last == "build-dependencies"
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if i := strings.Index(line, " #"); i != -1 {
+			line = strings.TrimSpace(line[:i])
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			flushSub()
+			sec := strings.TrimSpace(strings.Trim(line, "[]"))
+			inDepSection = isDepTable(sec)
+			if !inDepSection {
+				if i := strings.LastIndex(sec, "."); i != -1 && isDepTable(sec[:i]) {
+					subName = sec[i+1:]
+				}
+			}
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if subName != "" {
+			switch key {
+			case "version":
+				subVersion = strings.Trim(val, `"' `)
+			case "package":
+				subPackage = strings.Trim(val, `"' `)
+			case "path", "git", "workspace":
+				subLocal = true
+			}
+			continue
+		}
+		if !inDepSection {
+			continue
+		}
+		if strings.HasPrefix(val, "{") {
+			var version, packageName string
+			local := false
+			for _, sub := range strings.Split(strings.Trim(val, "{}"), ",") {
+				subParts := strings.SplitN(strings.TrimSpace(sub), "=", 2)
+				if len(subParts) != 2 {
+					continue
+				}
+				v := strings.Trim(strings.TrimSpace(subParts[1]), `"' `)
+				switch strings.TrimSpace(subParts[0]) {
+				case "version":
+					version = v
+				case "package":
+					packageName = v
+				case "path", "git", "workspace":
+					local = true
+				}
+			}
+			add(key, version, packageName, local)
+		} else {
+			add(key, strings.Trim(val, `"' `), "", false)
+		}
+	}
+	flushSub()
 	return pkgs, scanner.Err()
 }
 
@@ -687,6 +837,9 @@ func parseRubyGem(filePath string) ([]Package, error) {
 				fields := strings.Fields(trimmed)
 				if len(fields) >= 2 && strings.HasPrefix(fields[1], "(") && strings.HasSuffix(fields[1], ")") {
 					version := strings.Trim(fields[1], "()")
+					// Platform gems are listed as "1.10.0-x86_64-linux". RubyGems
+					// versions never contain "-", so the rest is the platform.
+					version = strings.SplitN(version, "-", 2)[0]
 					pkgs = append(pkgs, Package{
 						Name:      fields[0],
 						Version:   version,
@@ -709,6 +862,7 @@ func parseNPMLock(filePath string) ([]Package, error) {
 
 	var lockfile struct {
 		Packages map[string]struct {
+			Name    string `json:"name"`
 			Version string `json:"version"`
 		} `json:"packages"`
 	}
@@ -733,6 +887,11 @@ func parseNPMLock(filePath string) ([]Package, error) {
 			pkgName := key[idx+len("node_modules/"):]
 			if pkgName == "" {
 				continue
+			}
+			// An aliased install ("alias": "npm:real@1.0.0") records the real
+			// package name; the directory only carries the alias.
+			if val.Name != "" {
+				pkgName = val.Name
 			}
 			uniqueKey := pkgName + "@" + val.Version
 			if !seen[uniqueKey] {
@@ -759,6 +918,11 @@ func parseNPMLock(filePath string) ([]Package, error) {
 			}
 			if err := json.Unmarshal(raw, &dep); err == nil {
 				if dep.Version != "" {
+					name := name
+					// v1 records an alias as "version": "npm:real@1.0.0".
+					if real, version := splitNPMSpec(strings.TrimPrefix(dep.Version, "npm:")); strings.HasPrefix(dep.Version, "npm:") && version != "" {
+						name, dep.Version = real, version
+					}
 					uniqueKey := name + "@" + dep.Version
 					if !seen[uniqueKey] {
 						seen[uniqueKey] = true
@@ -784,6 +948,20 @@ func parseNPMLock(filePath string) ([]Package, error) {
 	}
 
 	return pkgs, nil
+}
+
+// splitNPMSpec splits "name@rest" into its parts, keeping the leading @ of a
+// scoped name. Without a separating @ the whole spec is the name.
+func splitNPMSpec(spec string) (string, string) {
+	start := 0
+	if strings.HasPrefix(spec, "@") {
+		start = 1
+	}
+	i := strings.Index(spec[start:], "@")
+	if i < 0 {
+		return spec, ""
+	}
+	return spec[:start+i], spec[start+i+1:]
 }
 
 // ── Yarn lockfile (yarn.lock) ────────────────────────────────────────────────
@@ -814,19 +992,12 @@ func parseYarnLock(filePath string) ([]Package, error) {
 			}
 			entry := strings.TrimSuffix(trimmed, ":")
 			firstPart := strings.Trim(strings.Split(entry, ",")[0], `" `)
-			lastAt := strings.Index(firstPart, "@")
-			if strings.HasPrefix(firstPart, "@") {
-				if slash := strings.Index(firstPart, "/"); slash >= 0 {
-					if at := strings.Index(firstPart[slash+1:], "@"); at >= 0 {
-						lastAt = slash + 1 + at
-					}
-				}
+			name, descriptor := splitNPMSpec(firstPart)
+			// "alias@npm:real-package@^1.0.0" installs real-package.
+			if real, version := splitNPMSpec(strings.TrimPrefix(descriptor, "npm:")); strings.HasPrefix(descriptor, "npm:") && version != "" {
+				name = real
 			}
-			if lastAt > 0 {
-				currentPkgName = firstPart[:lastAt]
-			} else {
-				currentPkgName = firstPart
-			}
+			currentPkgName = name
 			continue
 		}
 
@@ -924,6 +1095,15 @@ func parsePEP508Spec(spec string) (string, string) {
 		return "", ""
 	}
 
+	// A direct reference (name @ url) has no registry version to check.
+	if at := strings.Index(spec, "@"); at > 0 && !strings.ContainsAny(spec[:at], "=<>!~") {
+		name := strings.TrimSpace(strings.Split(spec[:at], "[")[0])
+		if name == "" || strings.TrimSpace(spec[at+1:]) == "" {
+			return "", ""
+		}
+		return name, "@ " + strings.TrimSpace(spec[at+1:])
+	}
+
 	// Find earliest version comparison operator
 	operators := []string{"===", "==", "~=", ">=", "<=", "!=", ">", "<"}
 	minIdx := -1
@@ -941,8 +1121,9 @@ func parsePEP508Spec(spec string) (string, string) {
 	if minIdx != -1 {
 		rawName = spec[:minIdx]
 		rawVer = spec[minIdx:]
-		if matchedOp == "==" && !strings.ContainsAny(rawVer[2:], ",* ") {
-			rawVer = rawVer[2:]
+		// PEP 508 allows whitespace around the operator: "urllib3 == 1.26.4".
+		if pinned := strings.TrimSpace(rawVer[2:]); matchedOp == "==" && !strings.ContainsAny(pinned, ",* ") {
+			rawVer = pinned
 		}
 	} else {
 		rawName = spec
@@ -959,6 +1140,10 @@ func parsePEP508Spec(spec string) (string, string) {
 	}
 	return rawName, rawVer
 }
+
+// Inline tables in dependency groups ({include-group = "test"}) name other
+// groups, not packages.
+var inlineTableRe = regexp.MustCompile(`\{[^}]*\}`)
 
 func parsePyProjectToml(filePath string) ([]Package, error) {
 	f, err := os.Open(filePath)
@@ -1029,9 +1214,27 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 		return false
 	}
 
+	isArraySection := func(section, key string) bool {
+		switch section {
+		case "project":
+			return key == "dependencies"
+		case "tool.uv":
+			return key == "dev-dependencies"
+		case "project.optional-dependencies", "dependency-groups", "tool.pdm.dev-dependencies":
+			return true
+		}
+		return false
+	}
+	isPoetrySection := func(section string) bool {
+		return section == "tool.poetry.dependencies" ||
+			section == "tool.poetry.dev-dependencies" ||
+			(strings.HasPrefix(section, "tool.poetry.group.") && strings.HasSuffix(section, ".dependencies"))
+	}
+
 	scanner := bufio.NewScanner(f)
 	section := ""
 	inArray := false
+	poetrySubtable := "" // [tool.poetry.dependencies.name]
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1046,11 +1249,23 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") && !strings.HasPrefix(line, "[[") && !inArray {
 			section = strings.Trim(line, "[] ")
 			inArray = false
+			poetrySubtable = ""
+			if i := strings.LastIndex(section, "."); i != -1 && isPoetrySection(section[:i]) {
+				poetrySubtable = strings.Trim(section[i+1:], `"'`)
+			}
 			continue
 		}
 
-		// 1. Handle PEP 621 [project] dependencies = [ ... ] and [project.optional-dependencies] / [dependency-groups]
-		if section == "project" || section == "project.optional-dependencies" || section == "dependency-groups" {
+		if poetrySubtable != "" {
+			if parts := strings.SplitN(line, "=", 2); len(parts) == 2 && strings.TrimSpace(parts[0]) == "version" {
+				addPkg(poetrySubtable, cleanNPMVersion(strings.Trim(strings.TrimSpace(parts[1]), `"' `)))
+			}
+			continue
+		}
+
+		// 1. PEP 621 [project] dependencies, optional dependencies, dependency
+		// groups, and the uv and PDM development dependency lists.
+		if section == "project" || section == "tool.uv" || isArraySection(section, "") {
 			if !inArray {
 				parts := strings.SplitN(line, "=", 2)
 				if len(parts) != 2 {
@@ -1058,11 +1273,11 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 				}
 				key := strings.TrimSpace(parts[0])
 				val := strings.TrimSpace(parts[1])
-				if section == "project" && key != "dependencies" {
+				if !isArraySection(section, key) {
 					continue
 				}
 				if strings.HasPrefix(val, "[") {
-					for _, item := range extractQuotedStrings(val) {
+					for _, item := range extractQuotedStrings(inlineTableRe.ReplaceAllString(val, "")) {
 						name, ver := parsePEP508Spec(item)
 						addPkg(name, ver)
 					}
@@ -1071,7 +1286,7 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 					}
 				}
 			} else {
-				for _, item := range extractQuotedStrings(line) {
+				for _, item := range extractQuotedStrings(inlineTableRe.ReplaceAllString(line, "")) {
 					name, ver := parsePEP508Spec(item)
 					addPkg(name, ver)
 				}
@@ -1083,11 +1298,7 @@ func parsePyProjectToml(filePath string) ([]Package, error) {
 		}
 
 		// 2. Handle Poetry [tool.poetry.dependencies], [tool.poetry.dev-dependencies], [tool.poetry.group.*.dependencies]
-		isPoetryDepSection := section == "tool.poetry.dependencies" ||
-			section == "tool.poetry.dev-dependencies" ||
-			(strings.HasPrefix(section, "tool.poetry.group.") && strings.HasSuffix(section, ".dependencies"))
-
-		if isPoetryDepSection {
+		if isPoetrySection(section) {
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) != 2 {
 				continue
@@ -1434,6 +1645,10 @@ func parseConanLock(filePath string) ([]Package, error) {
 			Nodes json.RawMessage `json:"nodes"`
 		} `json:"graph_lock"`
 		Nodes json.RawMessage `json:"nodes"`
+		// Conan 2 lockfiles list references directly.
+		Requires       []string `json:"requires"`
+		BuildRequires  []string `json:"build_requires"`
+		PythonRequires []string `json:"python_requires"`
 	}
 
 	if err := json.Unmarshal(data, &root); err != nil {
@@ -1445,14 +1660,18 @@ func parseConanLock(filePath string) ([]Package, error) {
 		nodesRaw = root.Nodes
 	}
 
-	if len(nodesRaw) == 0 {
-		return nil, nil
+	var nodesList []conanNode
+	for _, refs := range [][]string{root.Requires, root.BuildRequires, root.PythonRequires} {
+		for _, ref := range refs {
+			nodesList = append(nodesList, conanNode{Ref: ref})
+		}
 	}
 
-	var nodesList []conanNode
-
-	// Try unmarshaling as map[string]conanNode (Conan 2.0 / standard format)
+	// Conan 1 graph lock nodes, as a map keyed by node ID or as a list.
 	var nodesMap map[string]conanNode
+	if len(nodesRaw) == 0 {
+		nodesRaw = []byte("null")
+	}
 	if err := json.Unmarshal(nodesRaw, &nodesMap); err == nil {
 		for key, node := range nodesMap {
 			// In Conan, node "0" is always the root consumer project
@@ -1466,10 +1685,9 @@ func parseConanLock(filePath string) ([]Package, error) {
 		var slice []conanNode
 		if err := json.Unmarshal(nodesRaw, &slice); err == nil {
 			if len(slice) > 1 {
-				nodesList = slice[1:] // Skip root consumer node 0
-			} else {
-				nodesList = slice
+				slice = slice[1:] // Skip root consumer node 0
 			}
+			nodesList = append(nodesList, slice...)
 		}
 	}
 
@@ -1655,13 +1873,22 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 	var dartPackageConfigs []string
 	localModuleNames := make(map[string]bool)
 
-	err := filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
+	rootErr := filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// The root must be readable; below it, an unreadable directory or
+			// file makes the scan incomplete without discarding what was read.
+			if filepath.Clean(path) == filepath.Clean(rootDir) {
+				return err
+			}
+			discoveryIssues = append(discoveryIssues, fmt.Errorf("read %s: %w", path, err))
+			return continueAfterWalkError(d)
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if name == "venv" || name == ".venv" || name == "env" {
+			isRoot := filepath.Clean(path) == filepath.Clean(rootDir)
+			// A virtual environment is recognised by pyvenv.cfg whatever its
+			// name; venv and .venv are also accepted by name.
+			if !isRoot && (name == "venv" || name == ".venv" || isVirtualEnv(path)) {
 				venvDirs = append(venvDirs, path)
 				return filepath.SkipDir
 			}
@@ -1700,7 +1927,7 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 				}
 				return filepath.SkipDir
 			}
-			if skipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
+			if skipSourceDir(path, rootDir) {
 				return filepath.SkipDir
 			}
 			if _, statErr := os.Stat(filepath.Join(path, "__init__.py")); statErr == nil {
@@ -1710,10 +1937,6 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 		}
 
 		fileName := d.Name()
-		if fileName == "pyvenv.cfg" {
-			venvDirs = append(venvDirs, filepath.Dir(path))
-			return nil
-		}
 		if fileName == "project.assets.json" {
 			dotNetAssetFiles = append(dotNetAssetFiles, path)
 			return nil
@@ -1725,14 +1948,22 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, nil, &DiscoveryError{Issues: []error{err}}
+	if rootErr != nil {
+		return nil, nil, &DiscoveryError{Issues: []error{rootErr}}
 	}
 
 	var discoveredSources []string
 	var manifestPkgs []Package
 	lockDirs := make(map[string]map[string]bool)
 	hasLock := func(dir, eco string) bool { return lockDirs[filepath.Clean(dir)][eco] }
+	coveredEcosystems := make(map[string]map[string]bool)
+	cover := func(dir, eco string) {
+		dir = filepath.Clean(dir)
+		if coveredEcosystems[dir] == nil {
+			coveredEcosystems[dir] = make(map[string]bool)
+		}
+		coveredEcosystems[dir][eco] = true
+	}
 	appendEnv := func(pkgs []Package, projectDir string) []Package {
 		for i := range pkgs {
 			pkgs[i].ProjectPath = filepath.Clean(projectDir)
@@ -1753,7 +1984,11 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 			pkgs, parseErr := ParseManifest(file)
 			if parseErr != nil {
 				if isNamedDependencyFile(filepath.Base(file)) {
-					return nil, nil, fmt.Errorf("parse %s: %w", file, parseErr)
+					// Keep scanning: other manifests are still checked, and the
+					// scan is reported as incomplete.
+					discoveryIssues = append(discoveryIssues, fmt.Errorf("parse %s: %w", file, parseErr))
+					discoveredSources = append(discoveredSources, file)
+					cover(dir, dependencyFileEcosystem(file))
 				}
 				continue
 			}
@@ -1761,6 +1996,7 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 				continue
 			}
 			discoveredSources = append(discoveredSources, file)
+			cover(dir, dependencyFileEcosystem(file))
 			base := strings.ToLower(filepath.Base(file))
 			if lockDirs[dir] == nil {
 				lockDirs[dir] = make(map[string]bool)
@@ -1826,26 +2062,21 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 		}
 		if len(pkgs) > 0 || err != nil {
 			discoveredSources = append(discoveredSources, env.path)
+			cover(env.project, env.eco)
 		}
 		envPkgs = append(envPkgs, appendEnv(pkgs, env.project)...)
 	}
 
 	finalPkgs := mergeManifestAndEnvPackages(manifestPkgs, envPkgs)
 
-	coveredDirs := make(map[string]bool)
+	// A dependency source covers imports of its own ecosystem in its directory
+	// and below. A package.json says nothing about the Python imports beside it.
 	for _, pkg := range finalPkgs {
-		coveredDirs[filepath.Clean(pkg.ProjectPath)] = true
+		cover(pkg.ProjectPath, pkg.Ecosystem)
 	}
-	for _, source := range discoveredSources {
-		dir := filepath.Dir(source)
-		if filepath.Base(source) == "node_modules" || filepath.Base(source) == "vendor" {
-			dir = filepath.Dir(source)
-		}
-		coveredDirs[filepath.Clean(dir)] = true
-	}
-	covered := func(path string) bool {
-		for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
-			if coveredDirs[dir] {
+	covered := func(p Package) bool {
+		for dir := filepath.Dir(p.ManifestPath); ; dir = filepath.Dir(dir) {
+			if coveredEcosystems[filepath.Clean(dir)][p.Ecosystem] {
 				return true
 			}
 			parent := filepath.Dir(dir)
@@ -1854,10 +2085,13 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 			}
 		}
 	}
-	srcPkgs, _ := scanSourceCodeImports(rootDir, localModuleNames)
+	srcPkgs, _, srcErr := scanSourceCodeImports(rootDir)
+	if srcErr != nil {
+		discoveryIssues = append(discoveryIssues, srcErr)
+	}
 	seenSource := make(map[string]bool)
 	for _, p := range srcPkgs {
-		if covered(p.ManifestPath) {
+		if covered(p) {
 			continue
 		}
 		finalPkgs = append(finalPkgs, p)
@@ -1871,6 +2105,47 @@ func DiscoverDependencies(rootDir string) ([]Package, []string, error) {
 		return finalPkgs, discoveredSources, &DiscoveryError{Issues: discoveryIssues}
 	}
 	return finalPkgs, discoveredSources, nil
+}
+
+// dependencyFileEcosystem names the ecosystem a dependency file declares, so
+// that a manifest without dependencies still covers its own imports.
+func dependencyFileEcosystem(path string) string {
+	base := strings.ToLower(filepath.Base(path))
+	switch base {
+	case "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml":
+		return "npm"
+	case "pyproject.toml", "poetry.lock", "pipfile", "pipfile.lock", "uv.lock", "pdm.lock", "setup.py", "setup.cfg", "environment.yml", "environment.yaml":
+		return "PyPI"
+	case "go.mod", "go.sum":
+		return "Go"
+	case "cargo.toml", "cargo.lock":
+		return "crates.io"
+	case "composer.json", "composer.lock":
+		return "Packagist"
+	case "gemfile", "gemfile.lock":
+		return "RubyGems"
+	case "pom.xml", "build.gradle", "build.gradle.kts", "gradle.lockfile", "libs.versions.toml":
+		return "Maven"
+	case "packages.config", "packages.lock.json", "directory.packages.props", "paket.lock", "paket.dependencies":
+		return "NuGet"
+	case "conanfile.txt", "conanfile.py", "conan.lock", "vcpkg.json", "cmakelists.txt":
+		return "ConanCenter"
+	case "pubspec.yaml", "pubspec.lock":
+		return "Pub"
+	case "mix.exs", "mix.lock":
+		return "Hex"
+	case "package.swift", "package.resolved":
+		return "SwiftURL"
+	}
+	switch {
+	case strings.HasSuffix(base, "requirements.txt"):
+		return "PyPI"
+	case strings.HasSuffix(base, ".gemspec"):
+		return "RubyGems"
+	case strings.HasSuffix(base, ".csproj"), strings.HasSuffix(base, ".fsproj"), strings.HasSuffix(base, ".vbproj"):
+		return "NuGet"
+	}
+	return ""
 }
 
 func mergeManifestAndEnvPackages(manifestPkgs, envPkgs []Package) []Package {
@@ -1920,9 +2195,22 @@ func mergeManifestAndEnvPackages(manifestPkgs, envPkgs []Package) []Package {
 		}
 	}
 
+	// The installed version is what actually runs, so it replaces the declared
+	// one, including an exact pin that the environment does not match. An
+	// environment serves manifests in its project directory and below
+	// (requirements/base.txt beside a root .venv).
+	installed := func(mp Package) bool {
+		for dir := filepath.Clean(mp.ProjectPath); ; dir = filepath.Dir(dir) {
+			if envHasPkg[normKey(mp.Name, mp.Ecosystem)+"@"+dir] {
+				return true
+			}
+			if filepath.Dir(dir) == dir {
+				return false
+			}
+		}
+	}
 	for _, mp := range manifestPkgs {
-		nk := normKey(mp.Name, mp.Ecosystem) + "@" + mp.ProjectPath
-		if !envHasPkg[nk] || validateQueryVersion(mp) == nil {
+		if !installed(mp) {
 			k := mp.Key()
 			if !seen[k] {
 				seen[k] = true
@@ -2172,25 +2460,50 @@ func parseMavenWithProperties(filePath string, data []byte) ([]Package, error) {
 		props[entry.XMLName.Local] = strings.TrimSpace(entry.Value)
 	}
 
+	// Properties may refer to other properties and be embedded in text
+	// ("${major}.${minor}"). Unknown or cyclic references stay unresolved.
 	resolveProp := func(val string) string {
 		val = strings.TrimSpace(val)
-		if strings.HasPrefix(val, "${") && strings.HasSuffix(val, "}") {
-			key := val[2 : len(val)-1]
-			if resolved, ok := props[key]; ok {
-				return resolved
+		for depth := 0; depth < 10 && strings.Contains(val, "${"); depth++ {
+			start := strings.Index(val, "${")
+			end := strings.Index(val[start:], "}")
+			if end == -1 {
+				break
 			}
+			resolved, ok := props[val[start+2:start+end]]
+			if !ok {
+				break
+			}
+			val = val[:start] + resolved + val[start+end+1:]
 		}
 		return val
 	}
 
-	allDeps := append(pom.Dependencies, pom.DepMgmt...)
+	// dependencyManagement supplies versions for dependencies declared without
+	// one, and pins the versions of child-module and transitive dependencies,
+	// so its entries are reported. An imported BOM (scope import) is only a
+	// list of versions, not a dependency.
+	managed := make(map[string]string)
+	var allDeps []mavenDep
+	for _, dep := range pom.DepMgmt {
+		managed[resolveProp(dep.GroupID)+":"+resolveProp(dep.ArtifactID)] = dep.Version
+		if strings.TrimSpace(dep.Scope) != "import" {
+			allDeps = append(allDeps, dep)
+		}
+	}
+	for _, dep := range pom.Dependencies {
+		if strings.TrimSpace(dep.Version) == "" {
+			dep.Version = managed[resolveProp(dep.GroupID)+":"+resolveProp(dep.ArtifactID)]
+		}
+		allDeps = append(allDeps, dep)
+	}
 	var pkgs []Package
 	seen := make(map[string]bool)
 	for _, dep := range allDeps {
 		ver := resolveProp(dep.Version)
 		group := resolveProp(dep.GroupID)
 		artifact := resolveProp(dep.ArtifactID)
-		if group == "" || artifact == "" || ver == "" || strings.HasPrefix(ver, "${") {
+		if group == "" || artifact == "" || ver == "" || strings.Contains(ver, "${") {
 			continue
 		}
 		p := Package{
@@ -2208,13 +2521,21 @@ func parseMavenWithProperties(filePath string, data []byte) ([]Package, error) {
 }
 
 func parseDotNetXML(filePath string, data []byte) ([]Package, error) {
+	type rawProp struct {
+		XMLName xml.Name
+		Value   string `xml:",chardata"`
+	}
 	var proj struct {
+		PropertyGroups []struct {
+			Entries []rawProp `xml:",any"`
+		} `xml:"PropertyGroup"`
 		ItemGroups []struct {
 			PackageRefs []struct {
-				Include     string `xml:"Include,attr"`
-				Update      string `xml:"Update,attr"`
-				VersionAttr string `xml:"Version,attr"`
-				VersionElem string `xml:"Version"`
+				Include         string `xml:"Include,attr"`
+				Update          string `xml:"Update,attr"`
+				VersionAttr     string `xml:"Version,attr"`
+				VersionElem     string `xml:"Version"`
+				VersionOverride string `xml:"VersionOverride,attr"`
 			} `xml:"PackageReference"`
 			PackageVersions []struct {
 				Include     string `xml:"Include,attr"`
@@ -2231,11 +2552,35 @@ func parseDotNetXML(filePath string, data []byte) ([]Package, error) {
 		return nil, err
 	}
 
+	// MSBuild properties ($(Name)) defined in the same file are substituted;
+	// a version that still refers to an unknown property stays unresolved.
+	props := make(map[string]string)
+	for _, group := range proj.PropertyGroups {
+		for _, entry := range group.Entries {
+			props[strings.ToLower(entry.XMLName.Local)] = strings.TrimSpace(entry.Value)
+		}
+	}
+	resolve := func(val string) string {
+		for depth := 0; depth < 10 && strings.Contains(val, "$("); depth++ {
+			start := strings.Index(val, "$(")
+			end := strings.Index(val[start:], ")")
+			if end == -1 {
+				break
+			}
+			resolved, ok := props[strings.ToLower(val[start+2:start+end])]
+			if !ok {
+				break
+			}
+			val = val[:start] + resolved + val[start+end+1:]
+		}
+		return val
+	}
+
 	var pkgs []Package
 	seen := make(map[string]bool)
 	add := func(name, ver string) {
 		name = strings.TrimSpace(name)
-		ver = strings.TrimSpace(ver)
+		ver = resolve(strings.TrimSpace(ver))
 		if name == "" || ver == "" {
 			return
 		}
@@ -2260,6 +2605,11 @@ func parseDotNetXML(filePath string, data []byte) ([]Package, error) {
 			ver := ref.VersionAttr
 			if ver == "" {
 				ver = ref.VersionElem
+			}
+			// Central package management: a project-level override wins over
+			// the version in Directory.Packages.props.
+			if ref.VersionOverride != "" {
+				ver = ref.VersionOverride
 			}
 			add(name, ver)
 		}
@@ -2764,57 +3114,89 @@ func parseCondaEnvironmentYAML(filePath, content string) []Package {
 	return pkgs
 }
 
+// pythonStdlib lists the standard library (sys.stdlib_module_names of CPython
+// 3.12, plus modules removed in 3.12). typing_extensions is a PyPI package.
 var pythonStdlib = map[string]bool{
-	"abc": true, "argparse": true, "ast": true, "asyncio": true, "base64": true,
-	"bisect": true, "builtins": true, "calendar": true, "collections": true,
-	"concurrent": true, "ConfigParser": true, "configparser": true, "contextlib": true,
-	"contextvars": true, "copy": true, "csv": true, "ctypes": true, "curses": true,
-	"dataclasses": true, "datetime": true, "decimal": true, "difflib": true,
-	"dis": true, "doctest": true, "email": true, "enum": true, "errno": true,
-	"faulthandler": true, "fcntl": true, "filecmp": true, "fileinput": true,
-	"fnmatch": true, "fractions": true, "ftplib": true, "functools": true,
-	"gc": true, "getopt": true, "getpass": true, "gettext": true, "glob": true,
-	"graphlib": true, "grp": true, "gzip": true, "hashlib": true, "heapq": true,
-	"hmac": true, "html": true, "http": true, "imaplib": true, "importlib": true,
+	"ConfigParser": true, "__future__": true, "abc": true, "aifc": true, "antigravity": true,
+	"argparse": true, "array": true, "ast": true, "asynchat": true, "asyncio": true,
+	"asyncore": true, "atexit": true, "audioop": true, "base64": true, "bdb": true,
+	"binascii": true, "bisect": true, "builtins": true, "bz2": true, "cProfile": true,
+	"calendar": true, "cgi": true, "cgitb": true, "chunk": true, "cmath": true, "cmd": true,
+	"code": true, "codecs": true, "codeop": true, "collections": true, "colorsys": true,
+	"compileall": true, "concurrent": true, "configparser": true, "contextlib": true,
+	"contextvars": true, "copy": true, "copyreg": true, "crypt": true, "csv": true,
+	"ctypes": true, "curses": true, "dataclasses": true, "datetime": true, "dbm": true,
+	"decimal": true, "difflib": true, "dis": true, "distutils": true, "doctest": true,
+	"email": true, "encodings": true, "ensurepip": true, "enum": true, "errno": true,
+	"faulthandler": true, "fcntl": true, "filecmp": true, "fileinput": true, "fnmatch": true,
+	"fractions": true, "ftplib": true, "functools": true, "gc": true, "genericpath": true,
+	"getopt": true, "getpass": true, "gettext": true, "glob": true, "graphlib": true, "grp": true,
+	"gzip": true, "hashlib": true, "heapq": true, "hmac": true, "html": true, "http": true,
+	"idlelib": true, "imaplib": true, "imghdr": true, "imp": true, "importlib": true,
 	"inspect": true, "io": true, "ipaddress": true, "itertools": true, "json": true,
-	"keyword": true, "linecache": true, "locale": true, "logging": true, "lzma": true,
-	"mailbox": true, "marshal": true, "math": true, "mimetypes": true, "mmap": true,
-	"modulefinder": true, "multiprocessing": true, "netrc": true, "numbers": true,
-	"operator": true, "optparse": true, "os": true, "pathlib": true, "pdb": true,
-	"pickle": true, "pkgutil": true, "platform": true, "plistlib": true, "poplib": true,
-	"posix": true, "pprint": true, "profile": true, "pstats": true, "pty": true,
-	"pwd": true, "py_compile": true, "pyclbr": true, "pydoc": true, "queue": true,
-	"quopri": true, "random": true, "re": true, "readline": true, "reprlib": true,
-	"resource": true, "rlcompleter": true, "runpy": true, "sched": true, "secrets": true,
-	"select": true, "selectors": true, "shelve": true, "shlex": true, "shutil": true,
-	"signal": true, "site": true, "smtplib": true, "socket": true, "socketserver": true,
-	"sqlite3": true, "ssl": true, "stat": true, "statistics": true, "string": true,
-	"stringprep": true, "struct": true, "subprocess": true, "symtable": true, "sys": true,
-	"sysconfig": true, "syslog": true, "tabnanny": true, "tarfile": true, "tempfile": true,
-	"termios": true, "test": true, "textwrap": true, "threading": true, "time": true,
-	"timeit": true, "tkinter": true, "token": true, "tokenize": true, "tomllib": true,
-	"trace": true, "traceback": true, "tracemalloc": true, "tty": true, "turtle": true,
-	"types": true, "typing": true, "unicodedata": true, "unittest": true, "urllib": true,
-	"uuid": true, "venv": true, "warnings": true, "wave": true, "weakref": true,
-	"webbrowser": true, "winreg": true, "winsound": true, "wsgiref": true, "xml": true,
-	"xmlrpc": true, "zipapp": true, "zipfile": true, "zipimport": true, "zlib": true,
-	"zoneinfo": true, "__future__": true, "_thread": true, "typing_extensions": true,
+	"keyword": true, "lib2to3": true, "linecache": true, "locale": true, "logging": true,
+	"lzma": true, "mailbox": true, "mailcap": true, "marshal": true, "math": true,
+	"mimetypes": true, "mmap": true, "modulefinder": true, "msilib": true, "msvcrt": true,
+	"multiprocessing": true, "netrc": true, "nis": true, "nntplib": true, "nt": true,
+	"ntpath": true, "nturl2path": true, "numbers": true, "opcode": true, "operator": true,
+	"optparse": true, "os": true, "ossaudiodev": true, "pathlib": true, "pdb": true,
+	"pickle": true, "pickletools": true, "pipes": true, "pkgutil": true, "platform": true,
+	"plistlib": true, "poplib": true, "posix": true, "posixpath": true, "pprint": true,
+	"profile": true, "pstats": true, "pty": true, "pwd": true, "py_compile": true, "pyclbr": true,
+	"pydoc": true, "pydoc_data": true, "pyexpat": true, "queue": true, "quopri": true,
+	"random": true, "re": true, "readline": true, "reprlib": true, "resource": true,
+	"rlcompleter": true, "runpy": true, "sched": true, "secrets": true, "select": true,
+	"selectors": true, "shelve": true, "shlex": true, "shutil": true, "signal": true,
+	"site": true, "smtpd": true, "smtplib": true, "sndhdr": true, "socket": true,
+	"socketserver": true, "spwd": true, "sqlite3": true, "sre_compile": true,
+	"sre_constants": true, "sre_parse": true, "ssl": true, "stat": true, "statistics": true,
+	"string": true, "stringprep": true, "struct": true, "subprocess": true, "sunau": true,
+	"symtable": true, "sys": true, "sysconfig": true, "syslog": true, "tabnanny": true,
+	"tarfile": true, "telnetlib": true, "tempfile": true, "termios": true, "textwrap": true,
+	"this": true, "threading": true, "time": true, "timeit": true, "tkinter": true, "token": true,
+	"tokenize": true, "tomllib": true, "trace": true, "traceback": true, "tracemalloc": true,
+	"tty": true, "turtle": true, "turtledemo": true, "types": true, "typing": true,
+	"unicodedata": true, "unittest": true, "urllib": true, "uu": true, "uuid": true, "venv": true,
+	"warnings": true, "wave": true, "weakref": true, "webbrowser": true, "winreg": true,
+	"winsound": true, "wsgiref": true, "xdrlib": true, "xml": true, "xmlrpc": true,
+	"zipapp": true, "zipfile": true, "zipimport": true, "zlib": true, "zoneinfo": true,
 }
 
 var pythonImportAliases = map[string]string{
-	"cv2":         "opencv-python",
-	"bs4":         "beautifulsoup4",
-	"sklearn":     "scikit-learn",
-	"yaml":        "PyYAML",
-	"pil":         "Pillow",
-	"dotenv":      "python-dotenv",
-	"jwt":         "PyJWT",
-	"serial":      "pyserial",
-	"usb":         "pyusb",
-	"crypto":      "pycryptodome",
-	" Cryptodome": "pycryptodomex",
-	"dateutil":    "python-dateutil",
-	"attr":        "attrs",
+	"cv2":           "opencv-python",
+	"bs4":           "beautifulsoup4",
+	"sklearn":       "scikit-learn",
+	"yaml":          "PyYAML",
+	"pil":           "Pillow",
+	"dotenv":        "python-dotenv",
+	"jwt":           "PyJWT",
+	"serial":        "pyserial",
+	"usb":           "pyusb",
+	"crypto":        "pycryptodome",
+	"cryptodome":    "pycryptodomex",
+	"dateutil":      "python-dateutil",
+	"attr":          "attrs",
+	"jose":          "python-jose",
+	"openssl":       "pyOpenSSL",
+	"nacl":          "PyNaCl",
+	"magic":         "python-magic",
+	"docx":          "python-docx",
+	"pptx":          "python-pptx",
+	"git":           "GitPython",
+	"zmq":           "pyzmq",
+	"mysqldb":       "mysqlclient",
+	"skimage":       "scikit-image",
+	"fitz":          "PyMuPDF",
+	"slugify":       "python-slugify",
+	"multipart":     "python-multipart",
+	"socketio":      "python-socketio",
+	"engineio":      "python-engineio",
+	"ldap":          "python-ldap",
+	"kafka":         "kafka-python",
+	"telegram":      "python-telegram-bot",
+	"jinja2":        "Jinja2",
+	"markupsafe":    "MarkupSafe",
+	"pkg_resources": "setuptools",
 }
 
 var nodeBuiltinModules = map[string]bool{
@@ -2831,42 +3213,142 @@ var nodeBuiltinModules = map[string]bool{
 }
 
 var (
-	pyImportRe   = regexp.MustCompile(`^\s*(?:import|from)\s+([a-zA-Z0-9_]+)(?:\.([a-zA-Z0-9_]+))?`)
-	jsImportRe   = regexp.MustCompile(`(?:from\s+['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\))`)
-	rustUseRe    = regexp.MustCompile(`^\s*(?:pub\s+)?(?:use|extern\s+crate)\s+([a-zA-Z0-9_]+)`)
-	cIncludeRe   = regexp.MustCompile(`^\s*#\s*include\s*<([^>]+)>`)
-	javaImportRe = regexp.MustCompile(`^\s*import\s+(?:static\s+)?([a-zA-Z0-9_.]+)`)
-	csUsingRe    = regexp.MustCompile(`^\s*using\s+(?:static\s+)?([a-zA-Z0-9_.]+)\s*;`)
-	phpUseRe     = regexp.MustCompile(`^\s*use\s+([a-zA-Z0-9_]+)\\([a-zA-Z0-9_]+)`)
-	rubyReqRe    = regexp.MustCompile(`^\s*require\s+['"]([^'"]+)['"]`)
-	dartImportRe = regexp.MustCompile(`^\s*import\s+['"]package:([a-zA-Z0-9_]+)/`)
+	pyFromRe       = regexp.MustCompile(`^\s*from\s+([a-zA-Z0-9_][a-zA-Z0-9_.]*)\s+import\b`)
+	pyImportListRe = regexp.MustCompile(`^\s*import\s+([a-zA-Z0-9_][a-zA-Z0-9_., \t]*?)\s*(?:#.*)?$`)
+	jsImportRe     = regexp.MustCompile(`(?:from\s+['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\))`)
+	rustUseRe      = regexp.MustCompile(`^\s*(?:pub\s+)?(?:use|extern\s+crate)\s+([a-zA-Z0-9_]+)`)
+	cIncludeRe     = regexp.MustCompile(`^\s*#\s*include\s*<([^>]+)>`)
+	javaImportRe   = regexp.MustCompile(`^\s*import\s+(?:static\s+)?([a-zA-Z0-9_.]+)`)
+	csUsingRe      = regexp.MustCompile(`^\s*using\s+(?:static\s+)?([a-zA-Z0-9_.]+)\s*;`)
+	phpUseRe       = regexp.MustCompile(`^\s*use\s+([a-zA-Z0-9_]+)\\([a-zA-Z0-9_]+)(?:\\([a-zA-Z0-9_]+))?`)
+	rubyReqRe      = regexp.MustCompile(`^\s*require\s+['"]([^'"]+)['"]`)
+	dartImportRe   = regexp.MustCompile(`^\s*import\s+['"]package:([a-zA-Z0-9_]+)/`)
 )
 
-func scanSourceCodeImports(rootDir string, localModules map[string]bool) ([]Package, []string) {
-	var pkgs []Package
-	var sourceFiles []string
-	seenPkg := make(map[string]bool)
-	seenFile := make(map[string]bool)
+// localModuleIndex records the module names a project defines itself, per
+// directory, so that an import of a project's own module is not reported as a
+// third-party package. Names are visible from the directory that defines
+// them and every directory below it, and from the lib/ and src/ source roots
+// beside it. Sibling projects do not see each other's names.
+type localModuleIndex struct {
+	// python holds name.py modules and directories with __init__.py.
+	python map[string]map[string]bool
+	// other holds directories containing source files, and .rs/.rb modules.
+	other map[string]map[string]bool
+	cache map[string]map[string]bool
+}
 
+var sourceExtensions = map[string]bool{
+	".py": true, ".js": true, ".ts": true, ".jsx": true, ".tsx": true, ".mjs": true, ".cjs": true,
+	".go": true, ".rs": true, ".c": true, ".cc": true, ".cpp": true, ".cxx": true, ".h": true,
+	".hpp": true, ".hxx": true, ".java": true, ".kt": true, ".scala": true, ".cs": true,
+	".fs": true, ".php": true, ".rb": true, ".dart": true,
+}
+
+func buildLocalModuleIndex(rootDir string) *localModuleIndex {
+	idx := &localModuleIndex{
+		python: make(map[string]map[string]bool),
+		other:  make(map[string]map[string]bool),
+		cache:  make(map[string]map[string]bool),
+	}
+	add := func(set map[string]map[string]bool, dir, name string) {
+		dir = filepath.Clean(dir)
+		if set[dir] == nil {
+			set[dir] = make(map[string]bool)
+		}
+		set[dir][strings.ToLower(name)] = true
+	}
+	hasSource := make(map[string]bool)
+	// Read errors are reported by the import walk; this walk only collects names.
 	_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
-			name := d.Name()
-			if skipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
+			if skipSourceDir(path, rootDir) {
 				return filepath.SkipDir
 			}
-			localModules[strings.ToLower(name)] = true
+			if filepath.Clean(path) != filepath.Clean(rootDir) {
+				if _, statErr := os.Stat(filepath.Join(path, "__init__.py")); statErr == nil {
+					add(idx.python, filepath.Dir(path), d.Name())
+				}
+			}
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(d.Name()))
-		if ext == ".py" || ext == ".rs" || ext == ".rb" {
-			stem := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
-			localModules[strings.ToLower(stem)] = true
+		if !sourceExtensions[ext] {
+			return nil
+		}
+		stem := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
+		dir := filepath.Dir(path)
+		if ext == ".py" {
+			add(idx.python, dir, stem)
+		}
+		if ext == ".rs" || ext == ".rb" {
+			add(idx.other, dir, stem)
+		}
+		// Every directory above a source file, up to the root, holds source.
+		for d := dir; !hasSource[d] && d != filepath.Clean(rootDir); d = filepath.Dir(d) {
+			hasSource[d] = true
+			add(idx.other, filepath.Dir(d), filepath.Base(d))
 		}
 		return nil
 	})
+	return idx
+}
+
+// namesFor returns the local module names visible to the source file at path.
+// A Python module never hides the package it is named after from itself:
+// celery.py may import celery.
+func (idx *localModuleIndex) namesFor(path string, python bool) map[string]bool {
+	dir := filepath.Clean(filepath.Dir(path))
+	key := dir
+	set := idx.other
+	if python {
+		key, set = "py:"+dir, idx.python
+	}
+	names, ok := idx.cache[key]
+	if !ok {
+		names = make(map[string]bool)
+		for d := dir; ; d = filepath.Dir(d) {
+			for _, root := range []string{d, filepath.Join(d, "lib"), filepath.Join(d, "src")} {
+				for n := range set[root] {
+					names[n] = true
+				}
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+		idx.cache[key] = names
+	}
+	if python {
+		stem := strings.ToLower(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+		if names[stem] {
+			own := make(map[string]bool, len(names))
+			for n := range names {
+				own[n] = true
+			}
+			delete(own, stem)
+			return own
+		}
+	}
+	return names
+}
+
+// maxSourceScanBytes bounds how much of each source file is read for imports.
+const maxSourceScanBytes = 256 * 1024
+
+// scanSourceCodeImports returns third-party imports and the files they came
+// from. Unreadable directories and files are returned as errors, alongside the
+// imports that could be read, so that skipped sources never look clean.
+func scanSourceCodeImports(rootDir string) ([]Package, []string, error) {
+	var pkgs []Package
+	var sourceFiles []string
+	seenPkg := make(map[string]bool)
+	seenFile := make(map[string]bool)
+	var readErrors []error
+	locals := buildLocalModuleIndex(rootDir)
 
 	record := func(path, name, ecosystem string) {
 		if name == "" {
@@ -2884,106 +3366,145 @@ func scanSourceCodeImports(rootDir string, localModules map[string]bool) ([]Pack
 	}
 
 	_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			if d != nil && d.IsDir() {
-				name := d.Name()
-				if skipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
-					return filepath.SkipDir
-				}
+		if err != nil {
+			readErrors = append(readErrors, fmt.Errorf("scan source imports in %s: %w", path, err))
+			return continueAfterWalkError(d)
+		}
+		if d.IsDir() {
+			if skipSourceDir(path, rootDir) {
+				return filepath.SkipDir
 			}
 			return nil
 		}
 
+		var names []string
+		var ecosystem string
+		var readErr error
 		ext := strings.ToLower(filepath.Ext(d.Name()))
+		localModules := locals.namesFor(path, ext == ".py")
 		switch ext {
 		case ".py":
-			for _, pkgName := range extractPythonImports(path, localModules) {
-				record(path, pkgName, "PyPI")
-			}
+			names, readErr = extractPythonImports(path, localModules)
+			ecosystem = "PyPI"
 		case ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs":
-			for _, pkgName := range extractJSImports(path) {
-				record(path, pkgName, "npm")
-			}
+			names, readErr = extractJSImports(path)
+			ecosystem = "npm"
 		case ".go":
-			for _, pkgName := range extractGoImports(path, localModules) {
-				record(path, pkgName, "Go")
-			}
+			names, readErr = extractGoImports(path, localModules)
+			ecosystem = "Go"
 		case ".rs":
-			for _, pkgName := range extractRustImports(path, localModules) {
-				record(path, pkgName, "crates.io")
-			}
+			names, readErr = extractRustImports(path, localModules)
+			ecosystem = "crates.io"
 		case ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hxx":
-			for _, pkgName := range extractCPPIncludes(path, localModules) {
-				record(path, pkgName, "ConanCenter")
-			}
+			names, readErr = extractCPPIncludes(path, localModules)
+			ecosystem = "ConanCenter"
 		case ".java", ".kt", ".scala":
-			for _, pkgName := range extractJVMImports(path) {
-				record(path, pkgName, "Maven")
-			}
+			names, readErr = extractJVMImports(path)
+			ecosystem = "Maven"
 		case ".cs", ".fs":
-			for _, pkgName := range extractDotNetUsings(path, localModules) {
-				record(path, pkgName, "NuGet")
-			}
+			names, readErr = extractDotNetUsings(path, localModules)
+			ecosystem = "NuGet"
 		case ".php":
-			for _, pkgName := range extractPHPUses(path, localModules) {
-				record(path, pkgName, "Packagist")
-			}
+			names, readErr = extractPHPUses(path, localModules)
+			ecosystem = "Packagist"
 		case ".rb":
-			for _, pkgName := range extractRubyRequires(path, localModules) {
-				record(path, pkgName, "RubyGems")
-			}
+			names, readErr = extractRubyRequires(path, localModules)
+			ecosystem = "RubyGems"
 		case ".dart":
-			for _, pkgName := range extractDartImports(path, localModules) {
-				record(path, pkgName, "Pub")
-			}
+			names, readErr = extractDartImports(path, localModules)
+			ecosystem = "Pub"
+		}
+		if readErr != nil {
+			readErrors = append(readErrors, fmt.Errorf("scan source imports in %s: %w", path, readErr))
+		}
+		for _, name := range names {
+			record(path, name, ecosystem)
 		}
 		return nil
 	})
 
-	return pkgs, sourceFiles
+	return pkgs, sourceFiles, errors.Join(readErrors...)
 }
 
-func extractPythonImports(filePath string, localModules map[string]bool) []string {
+func extractPythonImports(filePath string, localModules map[string]bool) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var imports []string
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
+	var docQuote string // inside a triple-quoted string
 	for scanner.Scan() {
 		line := scanner.Text()
-		m := pyImportRe.FindStringSubmatch(line)
-		if len(m) < 2 {
+		trimmed := strings.TrimSpace(line)
+		if docQuote != "" {
+			if strings.Contains(trimmed, docQuote) {
+				docQuote = ""
+			}
 			continue
 		}
-		topMod := m[1]
-		subMod := ""
-		if len(m) >= 3 {
-			subMod = m[2]
+		for _, q := range []string{`"""`, "'''"} {
+			if strings.HasPrefix(trimmed, q) && strings.Count(trimmed, q)%2 == 1 {
+				docQuote = q
+			}
 		}
-		if pythonStdlib[topMod] || localModules[strings.ToLower(topMod)] || strings.HasPrefix(topMod, "_") {
+		if docQuote != "" {
 			continue
 		}
-		if topMod == "google" && subMod != "" {
-			imports = append(imports, "google-"+subMod)
-			continue
+		var modules []string
+		if m := pyFromRe.FindStringSubmatch(line); m != nil {
+			modules = []string{m[1]}
+		} else if m := pyImportListRe.FindStringSubmatch(line); m != nil {
+			// import a, b.c as d
+			for _, part := range strings.Split(m[1], ",") {
+				if fields := strings.Fields(part); len(fields) > 0 {
+					modules = append(modules, fields[0])
+				}
+			}
 		}
-		if mapped, ok := pythonImportAliases[strings.ToLower(topMod)]; ok {
-			imports = append(imports, mapped)
-		} else {
-			imports = append(imports, topMod)
+		for _, module := range modules {
+			if name := pythonDistributionName(module, localModules); name != "" {
+				imports = append(imports, name)
+			}
 		}
 	}
-	_ = scanner.Err()
-	return imports
+	return imports, scanner.Err()
 }
 
-func extractJSImports(filePath string) []string {
+// pythonDistributionName maps an imported module path to the PyPI project
+// that provides it, or "" for the standard library and local modules.
+func pythonDistributionName(module string, localModules map[string]bool) string {
+	parts := strings.Split(module, ".")
+	top := parts[0]
+	if top == "" || pythonStdlib[top] || localModules[strings.ToLower(top)] || (strings.HasPrefix(top, "_") && top != "__future__") || top == "__future__" {
+		return ""
+	}
+	if top == "google" && len(parts) > 1 {
+		switch parts[1] {
+		case "protobuf":
+			return "protobuf"
+		case "cloud":
+			if len(parts) > 2 {
+				return "google-cloud-" + strings.ReplaceAll(parts[2], "_", "-")
+			}
+			return ""
+		}
+		return "google-" + strings.ReplaceAll(parts[1], "_", "-")
+	}
+	if mapped, ok := pythonImportAliases[strings.ToLower(top)]; ok {
+		return mapped
+	}
+	return top
+}
+
+func extractJSImports(filePath string) ([]string, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var imports []string
 	for _, m := range jsImportRe.FindAllStringSubmatch(string(data), -1) {
@@ -3007,19 +3528,21 @@ func extractJSImports(filePath string) []string {
 			imports = append(imports, pkgName)
 		}
 	}
-	return imports
+	return imports, nil
 }
 
-func extractGoImports(filePath string, localModules map[string]bool) []string {
+func extractGoImports(filePath string, localModules map[string]bool) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var imports []string
 	inBlock := false
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "//") {
@@ -3049,8 +3572,7 @@ func extractGoImports(filePath string, localModules map[string]bool) []string {
 			}
 		}
 	}
-	_ = scanner.Err()
-	return imports
+	return imports, scanner.Err()
 }
 
 func normalizeGoModuleRoot(importPath string, localModules map[string]bool) string {
@@ -3058,41 +3580,50 @@ func normalizeGoModuleRoot(importPath string, localModules map[string]bool) stri
 	if len(parts) < 2 || !strings.Contains(parts[0], ".") || localModules[strings.ToLower(parts[0])] {
 		return "" // Go standard library or local package
 	}
-	// github.com/owner/repo/subpkg -> github.com/owner/repo
-	if (parts[0] == "github.com" || parts[0] == "gitlab.com" || parts[0] == "bitbucket.org") && len(parts) >= 3 {
-		return strings.Join(parts[:3], "/")
-	}
-	// golang.org/x/crypto/ssh -> golang.org/x/crypto
-	if parts[0] == "golang.org" && len(parts) >= 3 && parts[1] == "x" {
-		return strings.Join(parts[:3], "/")
-	}
 	// gopkg.in/yaml.v3 or gopkg.in/user/pkg.v2
 	if parts[0] == "gopkg.in" {
-		if len(parts) >= 3 {
+		if len(parts) >= 3 && !strings.Contains(parts[1], ".") {
 			return strings.Join(parts[:3], "/")
 		}
 		return strings.Join(parts[:2], "/")
 	}
-	if len(parts) >= 3 {
-		return strings.Join(parts[:3], "/")
+	// Code hosts and golang.org/x use host/owner/repo
+	// (github.com/owner/repo/subpkg -> github.com/owner/repo). Vanity hosts
+	// mostly use host/name (google.golang.org/grpc, go.uber.org/zap,
+	// k8s.io/client-go). Without go.mod the module boundary is a best guess.
+	n := 2
+	switch parts[0] {
+	case "github.com", "gitlab.com", "bitbucket.org", "golang.org", "cloud.google.com":
+		n = 3
 	}
-	return importPath
+	if len(parts) < n {
+		return importPath
+	}
+	// A major version suffix is part of the module path: github.com/go-chi/chi/v5.
+	if len(parts) > n && goMajorVersionRe.MatchString(parts[n]) {
+		n++
+	}
+	return strings.Join(parts[:n], "/")
 }
+
+var goMajorVersionRe = regexp.MustCompile(`^v[2-9][0-9]*$`)
 
 var rustBuiltinCrates = map[string]bool{
 	"std": true, "core": true, "alloc": true, "proc_macro": true,
 	"test": true, "crate": true, "self": true, "super": true,
 }
 
-func extractRustImports(filePath string, localModules map[string]bool) []string {
+func extractRustImports(filePath string, localModules map[string]bool) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var imports []string
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		m := rustUseRe.FindStringSubmatch(line)
@@ -3105,8 +3636,7 @@ func extractRustImports(filePath string, localModules map[string]bool) []string 
 		}
 		imports = append(imports, crateName)
 	}
-	_ = scanner.Err()
-	return imports
+	return imports, scanner.Err()
 }
 
 var cppStdHeaders = map[string]bool{
@@ -3184,15 +3714,17 @@ var cppHeaderToConan = map[string]string{
 	"pybind11":   "pybind11",
 }
 
-func extractCPPIncludes(filePath string, localModules map[string]bool) []string {
+func extractCPPIncludes(filePath string, localModules map[string]bool) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var includes []string
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		m := cIncludeRe.FindStringSubmatch(line)
@@ -3215,8 +3747,7 @@ func extractCPPIncludes(filePath string, localModules map[string]bool) []string 
 			includes = append(includes, strings.ToLower(top))
 		}
 	}
-	_ = scanner.Err()
-	return includes
+	return includes, scanner.Err()
 }
 
 var jvmPackageToMaven = map[string]string{
@@ -3243,15 +3774,17 @@ var jvmPackageToMaven = map[string]string{
 	"lombok":                         "org.projectlombok:lombok",
 }
 
-func extractJVMImports(filePath string) []string {
+func extractJVMImports(filePath string) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var imports []string
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		m := javaImportRe.FindStringSubmatch(line)
@@ -3282,19 +3815,20 @@ func extractJVMImports(filePath string) []string {
 			}
 		}
 	}
-	_ = scanner.Err()
-	return imports
+	return imports, scanner.Err()
 }
 
-func extractDotNetUsings(filePath string, localModules map[string]bool) []string {
+func extractDotNetUsings(filePath string, localModules map[string]bool) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var usings []string
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		m := csUsingRe.FindStringSubmatch(line)
@@ -3317,19 +3851,20 @@ func extractDotNetUsings(filePath string, localModules map[string]bool) []string
 			usings = append(usings, parts[0])
 		}
 	}
-	_ = scanner.Err()
-	return usings
+	return usings, scanner.Err()
 }
 
-func extractPHPUses(filePath string, localModules map[string]bool) []string {
+func extractPHPUses(filePath string, localModules map[string]bool) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var uses []string
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		m := phpUseRe.FindStringSubmatch(line)
@@ -3337,15 +3872,53 @@ func extractPHPUses(filePath string, localModules map[string]bool) []string {
 			continue
 		}
 		vendor := strings.ToLower(m[1])
-		pkg := strings.ToLower(m[2])
 		if vendor == "app" || vendor == "tests" || localModules[vendor] {
 			continue
 		}
-		uses = append(uses, vendor+"/"+pkg)
+		if name := phpPackageName(m[1], m[2], m[3]); name != "" {
+			uses = append(uses, name)
+		}
 	}
-	_ = scanner.Err()
-	return uses
+	return uses, scanner.Err()
 }
+
+// phpVendorPackages maps root namespaces whose Composer package name does not
+// follow the namespace.
+var phpVendorPackages = map[string]string{
+	"guzzlehttp":   "guzzlehttp/guzzle",
+	"monolog":      "monolog/monolog",
+	"illuminate":   "laravel/framework",
+	"phpunit":      "phpunit/phpunit",
+	"carbon":       "nesbot/carbon",
+	"twig":         "twig/twig",
+	"predis":       "predis/predis",
+	"firebase":     "firebase/php-jwt",
+	"phpmailer":    "phpmailer/phpmailer",
+	"dompdf":       "dompdf/dompdf",
+	"stripe":       "stripe/stripe-php",
+	"aws":          "aws/aws-sdk-php",
+	"intervention": "intervention/image",
+}
+
+// phpPackageName guesses the Composer package for "use Vendor\Second\Third".
+// Symfony components are symfony/<component>; otherwise the second segment
+// names the package in kebab case (Doctrine\ORM -> doctrine/orm).
+func phpPackageName(vendor, second, third string) string {
+	kebab := func(s string) string { return strings.ToLower(phpKebabRe.ReplaceAllString(s, "${1}-${2}")) }
+	v := strings.ToLower(vendor)
+	if v == "symfony" && strings.EqualFold(second, "Component") {
+		if third == "" {
+			return ""
+		}
+		return "symfony/" + kebab(third)
+	}
+	if mapped, ok := phpVendorPackages[v]; ok {
+		return mapped
+	}
+	return v + "/" + kebab(second)
+}
+
+var phpKebabRe = regexp.MustCompile(`([a-z0-9])([A-Z])`)
 
 var rubyStdlib = map[string]bool{
 	"abbrev": true, "base64": true, "benchmark": true, "bigdecimal": true, "cgi": true,
@@ -3366,15 +3939,17 @@ var rubyStdlib = map[string]bool{
 	"webrick": true, "yaml": true, "zlib": true,
 }
 
-func extractRubyRequires(filePath string, localModules map[string]bool) []string {
+func extractRubyRequires(filePath string, localModules map[string]bool) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var reqs []string
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		m := rubyReqRe.FindStringSubmatch(line)
@@ -3391,19 +3966,20 @@ func extractRubyRequires(filePath string, localModules map[string]bool) []string
 		}
 		reqs = append(reqs, gem)
 	}
-	_ = scanner.Err()
-	return reqs
+	return reqs, scanner.Err()
 }
 
-func extractDartImports(filePath string, localModules map[string]bool) []string {
+func extractDartImports(filePath string, localModules map[string]bool) ([]string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	var imports []string
-	scanner := bufio.NewScanner(io.LimitReader(f, 256*1024))
+	scanner := bufio.NewScanner(io.LimitReader(f, maxSourceScanBytes))
+	// A line may fill the whole read window, so it can never exceed the token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSourceScanBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		m := dartImportRe.FindStringSubmatch(line)
@@ -3416,6 +3992,5 @@ func extractDartImports(filePath string, localModules map[string]bool) []string 
 		}
 		imports = append(imports, pkg)
 	}
-	_ = scanner.Err()
-	return imports
+	return imports, scanner.Err()
 }

@@ -127,8 +127,12 @@ func runUpdateWith(opts updaterOptions) error {
 		}
 
 		if err := opts.fs.rename(tmpPath, exePath); err != nil {
-			_ = opts.fs.rename(oldPath, exePath) // Rollback if new copy failed
 			opts.fs.remove(tmpPath)
+			// Roll back. If that fails too, say where the working binary is,
+			// since nothing is left at the original path.
+			if rollbackErr := opts.fs.rename(oldPath, exePath); rollbackErr != nil {
+				return fmt.Errorf("unable to install new executable: %w; restoring the previous version also failed (%v), so it is saved as %s: rename it back to %s", err, rollbackErr, oldPath, exePath)
+			}
 			return fmt.Errorf("unable to install new executable: %w", err)
 		}
 

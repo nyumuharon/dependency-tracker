@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -127,5 +128,127 @@ func TestPURLTypesAndCLIEqualsOptions(t *testing.T) {
 		if ok != tc.ok || (ok && got != tc.want) {
 			t.Fatalf("%+v: %v %v", tc, got, ok)
 		}
+	}
+}
+
+func TestSARIFRulesLocationsAndFingerprints(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inRepo := writeFixture(t, repo, "..svc/package.json", "{}")
+	outside := writeFixture(t, t.TempDir(), "pom.xml", "<project/>")
+	cwdOnly := t.TempDir()
+	belowCwd := writeFixture(t, cwdOnly, "sub/go.mod", "module x\n")
+	shared := Vulnerability{CVEID: "CVE-2026-1", Summary: "shared issue", CVSS: 7.5, EPSSKnown: true}
+	results := []ScanResult{
+		{Pkg: Package{Name: "a", Version: "1.0.0", Ecosystem: "npm", ManifestPath: inRepo}, ScanStatus: "complete", Vulnerabilities: []Vulnerability{shared}},
+		{Pkg: Package{Name: "b", Version: "2.0.0", Ecosystem: "npm", ManifestPath: inRepo}, ScanStatus: "complete", Vulnerabilities: []Vulnerability{shared}},
+		{Pkg: Package{Name: "c", Version: "1.0.0", Ecosystem: "Maven", ManifestPath: outside}, ScanStatus: "incomplete", Vulnerabilities: []Vulnerability{{CVEID: "CVE-2026-2"}}},
+		{Pkg: Package{Name: "d", Version: "1.0.0", Ecosystem: "Go", ManifestPath: belowCwd}, ScanStatus: "complete", Vulnerabilities: []Vulnerability{{CVEID: "GHSA-x", Severity: "HIGH"}}},
+		{Pkg: Package{Name: "e", Version: "1.0.0", Ecosystem: "npm"}, ScanStatus: "complete", Vulnerabilities: []Vulnerability{{CVEID: "CVE-2026-3", IsKEV: true}}},
+	}
+	path := filepath.Join(t.TempDir(), "out.sarif")
+	if err := generateSARIFWithDirectory(results, path, func() (string, error) { return cwdOnly, nil }); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report SARIFReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	run := report.Runs[0]
+	if len(run.Tool.Driver.Rules) != 4 || len(run.Results) != 5 {
+		t.Fatalf("rules %d results %d", len(run.Tool.Driver.Rules), len(run.Results))
+	}
+	rule := run.Tool.Driver.Rules[0]
+	if strings.Contains(rule.ShortDescription.Text+rule.Help.Text+rule.Help.Markdown, "a@1.0.0") || rule.ShortDescription.Text != "CVE-2026-1: shared issue" {
+		t.Fatalf("shared rule names one package: %+v", rule)
+	}
+	if _, ok := run.Tool.Driver.Rules[1].Properties["security-severity"]; ok {
+		t.Fatal("unknown severity reported as a number")
+	}
+	if run.Tool.Driver.Rules[2].Properties["security-severity"] != "7.0" || run.Tool.Driver.Rules[3].Properties["security-severity"] != "10.0" {
+		t.Fatalf("rated or KEV severities wrong: %+v %+v", run.Tool.Driver.Rules[2].Properties, run.Tool.Driver.Rules[3].Properties)
+	}
+	fp := map[string]bool{}
+	for _, r := range run.Results {
+		fp[r.PartialFingerprints["dependencyFinding/v1"]] = true
+	}
+	if len(fp) != 5 {
+		t.Fatalf("findings share fingerprints: %v", fp)
+	}
+	loc := func(i int) SARIFArtifactLocation {
+		return run.Results[i].Locations[0].PhysicalLocation.ArtifactLocation
+	}
+	if got := loc(0); got.URI != "..svc/package.json" || got.URIBaseID != "%SRCROOT%" {
+		t.Fatalf("repository-relative path: %+v", got)
+	}
+	if got := loc(2); !strings.HasPrefix(got.URI, "file:///") || got.URIBaseID != "" || strings.Contains(got.URI, `\`) {
+		t.Fatalf("outside path must be an absolute file URI: %+v", got)
+	}
+	if got := loc(3); got.URI != "sub/go.mod" || got.URIBaseID != "%SRCROOT%" {
+		t.Fatalf("working-directory-relative path: %+v", got)
+	}
+	if got := loc(4); got.URI != "manifest" {
+		t.Fatalf("missing manifest path: %+v", got)
+	}
+}
+
+func TestCacheWritesAreAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cache.json")
+	writeCacheFile(path, []byte(`{"a":1}`))
+	if data, err := os.ReadFile(path); err != nil || string(data) != `{"a":1}` {
+		t.Fatalf("%s %v", data, err)
+	}
+	// A missing directory and a directory in the way both leave no temp files.
+	writeCacheFile(filepath.Join(dir, "missing", "cache.json"), []byte("x"))
+	blocked := filepath.Join(dir, "blocked")
+	writeFixture(t, blocked, "keep", "x")
+	writeCacheFile(blocked, []byte("x"))
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 2 {
+		t.Fatalf("temporary files left behind: %v", entries)
+	}
+}
+
+func TestSBOMReferencesAndPyPINames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sbom.json")
+	pkg := Package{Name: "Django_REST", Version: "3.0.0", Ecosystem: "PyPI", VersionSource: "manifest"}
+	other := pkg
+	other.ProjectPath = "other"
+	if err := GenerateSBOM([]ScanResult{{Pkg: pkg}, {Pkg: other}, {Pkg: Package{Name: "loose", Version: "^1.0", Ecosystem: "npm", VersionSource: "constraint"}}}, path); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	var bom CycloneDXSBOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	refs := []string{bom.Components[0].BOMRef, bom.Components[1].BOMRef, bom.Components[2].BOMRef}
+	want := []string{"pkg:pypi/django-rest@3.0.0", "pkg:pypi/django-rest@3.0.0#2", "npm:loose@^1.0"}
+	if strings.Join(refs, " ") != strings.Join(want, " ") || !regexp.MustCompile(`^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(bom.SerialNumber) {
+		t.Fatalf("refs %v serial %s", refs, bom.SerialNumber)
+	}
+}
+
+func TestRemediationTableOrdersFixedReleasesByVersion(t *testing.T) {
+	out := captureReport(t, []ScanResult{{
+		Pkg:          Package{Name: "org.apache.logging.log4j:log4j-core", Version: "2.24.0", Ecosystem: "Maven"},
+		ScanStatus:   "complete",
+		PriorityTier: "HIGH",
+		Vulnerabilities: []Vulnerability{
+			{CVEID: "CVE-1", CVSS: 7, FixedVersion: "2.25.10"},
+			{CVEID: "CVE-2", CVSS: 7, FixedVersion: "2.25.4"},
+			{CVEID: "CVE-3", CVSS: 7, FixedVersion: "3.0.0-beta1"},
+			{CVEID: "CVE-4", CVSS: 7, FixedVersion: "2.3.0-rc1"},
+		},
+	}})
+	if !strings.Contains(out, "2.25.4, 2.25.10, 2.3.0-rc1, 3.0.0-beta1") || !strings.Contains(out, "org.apache.logging.log4j:log4j-core HIGH") {
+		t.Fatalf("fixed releases misordered or table misaligned:\n%s", out)
 	}
 }

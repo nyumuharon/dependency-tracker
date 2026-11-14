@@ -56,10 +56,14 @@ try {
 }
 
 # 5. Ensure install directory is in User PATH
+# Compare whole entries (ignoring case and a trailing backslash): a substring
+# test would treat C:\tools\bin as present when only C:\tools\bin2 is.
 $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-if ($userPath -split ";" -notcontains $installDir -and $userPath -notlike "*$installDir*") {
+$normalizedInstallDir = $installDir.TrimEnd('\')
+$userEntries = @(($userPath -split ";") | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') })
+if ($userEntries -notcontains $normalizedInstallDir) {
     Write-Host "Adding $installDir to User PATH..." -ForegroundColor Cyan
-    $newPath = "$userPath;$installDir"
+    $newPath = if ($userPath) { "$($userPath.TrimEnd(';'));$installDir" } else { $installDir }
     [System.Environment]::SetEnvironmentVariable("Path", $newPath, "User")
 }
 

@@ -19,7 +19,7 @@ func TestUpdaterPlatformAndFailureContracts(t *testing.T) {
 		fail           bool
 	}{
 		{"linux-success", "linux", false}, {"darwin-success", "darwin", false}, {"windows-success", "windows", false},
-		{"windows-backup-failure", "windows", true}, {"windows-install-failure", "windows", true},
+		{"windows-backup-failure", "windows", true}, {"windows-install-failure", "windows", true}, {"windows-rollback-failure", "windows", true},
 		{"chmod-failure", "linux", true}, {"rename-failure", "linux", true}, {"permission-failure", "linux", true},
 		{"executable-failure", "linux", true}, {"symlink-failure", "linux", true}, {"unsupported-platform", "plan9", true},
 		{"api-request-failure", "linux", true}, {"api-network-failure", "linux", true}, {"api-status-failure", "linux", true},
@@ -54,8 +54,11 @@ func TestUpdaterPlatformAndFailureContracts(t *testing.T) {
 				if tc.name == "windows-backup-failure" && old == exe {
 					return errors.New("backup failed")
 				}
-				if tc.name == "windows-install-failure" && strings.Contains(old, ".dep-tracker-update-") {
+				if (tc.name == "windows-install-failure" || tc.name == "windows-rollback-failure") && strings.Contains(old, ".dep-tracker-update-") {
 					return errors.New("install failed")
+				}
+				if tc.name == "windows-rollback-failure" && strings.HasSuffix(old, ".old") {
+					return errors.New("rollback failed")
 				}
 				if tc.name == "rename-failure" {
 					return errors.New("rename failed")
@@ -109,6 +112,13 @@ func TestUpdaterPlatformAndFailureContracts(t *testing.T) {
 			err := runUpdateWith(options)
 			if (err != nil) != tc.fail {
 				t.Fatalf("unexpected update outcome: %v", err)
+			}
+			if tc.name == "windows-rollback-failure" {
+				// The working binary must survive, and the error must say where.
+				if saved, readErr := os.ReadFile(exe + ".old"); readErr != nil || string(saved) != "original executable" || !strings.Contains(err.Error(), exe+".old") {
+					t.Fatalf("previous binary lost or not reported: %v %v", readErr, err)
+				}
+				return
 			}
 			data, readErr := os.ReadFile(exe)
 			if readErr != nil {

@@ -30,12 +30,12 @@ func TestDiscoveryOptionalSourcesAndPrecedence(t *testing.T) {
 			t.Fatal("unreadable project ignored")
 		}
 	}
-	if pkgs, files := scanSourceCodeImports(filepath.Join(t.TempDir(), "missing"), map[string]bool{}); len(pkgs) != 0 || len(files) != 0 {
-		t.Fatal("unreadable source invented imports")
+	if pkgs, files, err := scanSourceCodeImports(filepath.Join(t.TempDir(), "missing")); len(pkgs) != 0 || len(files) != 0 || err == nil {
+		t.Fatal("unreadable source invented imports or looked clean")
 	}
 	cpp := t.TempDir()
 	writeFixture(t, cpp, "main.cpp", "#include </absolute>\n")
-	if pkgs, _ := scanSourceCodeImports(cpp, map[string]bool{}); len(pkgs) != 0 {
+	if pkgs, _, _ := scanSourceCodeImports(cpp); len(pkgs) != 0 {
 		t.Fatalf("empty package identity invented: %+v", pkgs)
 	}
 	root = t.TempDir()

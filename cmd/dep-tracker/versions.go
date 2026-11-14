@@ -117,8 +117,8 @@ func compareVersions(a, b, ecosystem string) (int, bool) {
 
 func normalizeExactPin(v, ecosystem string) string {
 	v = strings.TrimSpace(v)
-	if strings.HasPrefix(v, "==") && !strings.ContainsAny(v[2:], ",* ") {
-		return v[2:]
+	if pinned := strings.TrimSpace(strings.TrimPrefix(v, "==")); strings.HasPrefix(v, "==") && pinned != "" && !strings.ContainsAny(pinned, ",* ") {
+		return pinned
 	}
 	if strings.HasPrefix(v, "=") && !strings.HasPrefix(v, "==") {
 		return strings.TrimSpace(v[1:])

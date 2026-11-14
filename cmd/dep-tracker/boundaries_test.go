@@ -45,7 +45,7 @@ func TestRiskPolicyBoundaries(t *testing.T) {
 		kev        bool
 		want       string
 	}{
-		{0, 0, false, "LOW"}, {3.9, 1, false, "LOW"}, {4, 0, false, "MEDIUM"}, {6.9, 1, false, "MEDIUM"},
+		{0, 0, false, "UNKNOWN"}, {0.1, 0, false, "LOW"}, {3.9, 1, false, "LOW"}, {4, 0, false, "MEDIUM"}, {6.9, 1, false, "MEDIUM"},
 		{7, .19999, false, "HIGH"}, {7, .2, false, "CRITICAL-EXPLOITABLE"}, {0, 0, true, "CRITICAL-EXPLOITABLE"},
 	} {
 		if got := Score(tc.cvss, tc.epss, true, tc.kev); got != tc.want {

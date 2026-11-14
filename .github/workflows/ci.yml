@@ -37,6 +37,22 @@ jobs:
       - name: Test Windows installer and PATH configuration
         shell: pwsh
         run: ./scripts/test-install.ps1
+  # Windows is a release target, so the Go suite also runs there. Coverage is
+  # enforced on Linux and macOS, where the Unix permission tests can run.
+  windows-go:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -count=1 ./...
+      - run: go vet ./...
+      - name: Build and run native executable
+        shell: pwsh
+        run: |
+          go build -o "$env:RUNNER_TEMP\dep-tracker.exe" ./cmd/dep-tracker
+          & "$env:RUNNER_TEMP\dep-tracker.exe" version
   reference-scanner:
     runs-on: ubuntu-latest
     steps:

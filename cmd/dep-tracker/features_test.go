@@ -437,7 +437,7 @@ func TestIntelligentContentAndSourceDiscovery(t *testing.T) {
 		"openssl":                             "ConanCenter",
 		"org.apache.logging.log4j:log4j-core": "Maven",
 		"Newtonsoft.Json":                     "NuGet",
-		"monolog/logger":                      "Packagist",
+		"monolog/monolog":                     "Packagist",
 		"sinatra":                             "RubyGems",
 		"http":                                "Pub",
 	}

@@ -19,10 +19,10 @@ func TestRegistryMaintenanceResponsesAndFailures(t *testing.T) {
 	cases := []struct{ eco, name, body string }{
 		{"npm", "example", fmt.Sprintf(`{"dist-tags":{"latest":"1.0.0"},"time":{"1.0.0":%q}}`, stamp)},
 		{"PyPI", "example", fmt.Sprintf(`<rss><channel><item><title>1.0.0</title><pubDate>%s</pubDate></item></channel></rss>`, recent.Format(time.RFC1123Z))},
-		{"Maven", "org.example:example", fmt.Sprintf(`{"response":{"docs":[{"latestVersion":"1.0.0","timestamp":%d}]}}`, recent.UnixMilli())},
+		{"Maven", "org.example:example", fmt.Sprintf(`{"response":{"docs":[{"v":"1.0.0","timestamp":%d}]}}`, recent.UnixMilli())},
 		{"NuGet", "Example", fmt.Sprintf(`{"items":[{"upper":"1.0.0","items":[{"catalogEntry":{"version":"1.0.0","published":%q}}]}]}`, stamp)},
 		{"Go", "github.com/Example/Example", fmt.Sprintf(`{"Version":"1.0.0","Time":%q}`, stamp)},
-		{"crates.io", "example", fmt.Sprintf(`{"crate":{"max_version":"1.0.0","updated_at":%q}}`, stamp)},
+		{"crates.io", "example", fmt.Sprintf(`{"crate":{"max_version":"1.0.0","max_stable_version":"1.0.0","updated_at":"2000-01-01T00:00:00Z"},"versions":[{"num":"1.1.0-rc1","created_at":"2000-01-01T00:00:00Z"},{"num":"1.0.0","created_at":%q}]}`, stamp)},
 		{"Packagist", "example/example", fmt.Sprintf(`{"packages":{"example/example":[{"version":"1.0.0","time":%q}]}}`, stamp)},
 		{"RubyGems", "example", fmt.Sprintf(`{"version":"1.0.0","version_created_at":%q}`, stamp)},
 		{"Pub", "example", fmt.Sprintf(`{"latest":{"version":"1.0.0","published":%q}}`, stamp)},

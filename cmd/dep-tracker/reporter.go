@@ -36,7 +36,9 @@ func PrintReport(results []ScanResult) {
 	sep := strings.Repeat("=", 72)
 	thinSep := strings.Repeat("-", 72)
 
-	// Sort results: highest priority first (CRITICAL -> HIGH -> MEDIUM -> LOW -> NONE), then alphabetically
+	// Sort a copy, so the caller's order (used for the SBOM and SARIF) is kept:
+	// highest priority first (CRITICAL -> HIGH -> MEDIUM -> LOW -> NONE), then alphabetically
+	results = append([]ScanResult(nil), results...)
 	sort.SliceStable(results, func(i, j int) bool {
 		ri, rj := tierRank(results[i].PriorityTier), tierRank(results[j].PriorityTier)
 		if ri != rj {
@@ -50,6 +52,7 @@ func PrintReport(results []ScanResult) {
 	mediumCount := 0
 	lowCount := 0
 	noneCount := 0
+	unknownCount := 0
 	staleCount := 0
 	totalVulns := 0
 	kevCount := 0
@@ -87,6 +90,8 @@ func PrintReport(results []ScanResult) {
 			lowCount++
 		case "NONE":
 			noneCount++
+		case "UNKNOWN":
+			unknownCount++
 		}
 
 		if len(r.Vulnerabilities) > 0 {
@@ -108,7 +113,13 @@ func PrintReport(results []ScanResult) {
 				}
 			}
 			if len(fixes) > 0 {
-				sort.Strings(fixes)
+				eco := r.Pkg.Ecosystem
+				sort.SliceStable(fixes, func(i, j int) bool {
+					if c, ok := compareVersions(fixes[i], fixes[j], eco); ok {
+						return c < 0
+					}
+					return fixes[i] < fixes[j]
+				})
 				remediations = append(remediations, RemediationRow{
 					PkgName: r.Pkg.Name,
 					Tier:    r.PriorityTier,
@@ -166,7 +177,7 @@ func PrintReport(results []ScanResult) {
 						kevTag = " | ⚠️ CISA-KEV EXPLOITED"
 					}
 				}
-				fmt.Printf("      • %s [CVSS: %.1f | EPSS: %s%s]\n", idDisplay, v.CVSS, v.epssDisplay(), kevTag)
+				fmt.Printf("      • %s [CVSS: %s | EPSS: %s%s]\n", idDisplay, v.cvssDisplay(), v.epssDisplay(), kevTag)
 				if v.Summary != "" {
 					fmt.Printf("        Summary : %s\n", v.Summary)
 				}
@@ -188,10 +199,16 @@ func PrintReport(results []ScanResult) {
 		fmt.Printf("\n\n%s\n", sep)
 		fmt.Printf("%45s\n", "RECOMMENDED ACTIONS & FIXES")
 		fmt.Println(sep)
-		fmt.Printf("  %-25s %-15s %-12s %-15s\n", "PACKAGE", "SEVERITY", "CURRENT", "FIXED RELEASES")
+		// Columns widen to the longest entry so long names keep the table aligned.
+		nameWidth, currentWidth := 25, 12
+		for _, rem := range remediations {
+			nameWidth = max(nameWidth, len(rem.PkgName))
+			currentWidth = max(currentWidth, len(rem.Current))
+		}
+		fmt.Printf("  %-*s %-20s %-*s %s\n", nameWidth, "PACKAGE", "SEVERITY", currentWidth, "CURRENT", "FIXED RELEASES")
 		fmt.Println(thinSep)
 		for _, rem := range remediations {
-			fmt.Printf("  %-25s %-15s %-12s %-15s\n", rem.PkgName, rem.Tier, rem.Current, rem.Fix)
+			fmt.Printf("  %-*s %-20s %-*s %s\n", nameWidth, rem.PkgName, rem.Tier, currentWidth, rem.Current, rem.Fix)
 		}
 	}
 
@@ -261,5 +278,6 @@ func PrintReport(results []ScanResult) {
 	fmt.Printf("  MEDIUM               : %d\n", mediumCount)
 	fmt.Printf("  LOW                  : %d\n", lowCount)
 	fmt.Printf("  NONE                 : %d\n", noneCount)
+	fmt.Printf("  UNKNOWN              : %d\n", unknownCount)
 	fmt.Println(sep)
 }

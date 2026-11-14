@@ -82,7 +82,7 @@ func FetchKEVCatalog() (map[string]KEVEntry, error) {
 		return loadStaleCacheOrError(cachePath, err)
 	}
 	// Save validated data only.
-	_ = os.WriteFile(cachePath, body, 0644)
+	writeCacheFile(cachePath, body)
 	return catalog, nil
 }
 

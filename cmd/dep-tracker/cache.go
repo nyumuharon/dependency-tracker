@@ -21,3 +21,19 @@ func cacheFile(name string) string {
 	_ = os.MkdirAll(dir, 0755)
 	return filepath.Join(dir, name)
 }
+
+// writeCacheFile replaces a cache file atomically: the data is written to a
+// temporary file in the same directory and renamed over the old file, so a
+// concurrent run never reads a half-written cache. Cache writes are best
+// effort, so failures are ignored.
+func writeCacheFile(path string, data []byte) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return
+	}
+	_, writeErr := tmp.Write(data)
+	closeErr := tmp.Close()
+	if writeErr != nil || closeErr != nil || os.Rename(tmp.Name(), path) != nil {
+		_ = os.Remove(tmp.Name())
+	}
+}

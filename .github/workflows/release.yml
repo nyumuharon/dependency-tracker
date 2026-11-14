@@ -12,9 +12,24 @@ on:
         default: 'v1.0.8'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require the release tag to match appVersion
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}
+        run: |
+          version=$(sed -n 's/^const appVersion = "\(.*\)"$/\1/p' cmd/dep-tracker/main.go)
+          if [ -z "$version" ] || [ "$TAG" != "v$version" ]; then
+            echo "Release tag '$TAG' does not match appVersion '$version' in cmd/dep-tracker/main.go." >&2
+            echo "Update appVersion before tagging, or the binaries report the wrong version and 'update' loops." >&2
+            exit 1
+          fi
+
   native-validation:
     strategy:
       fail-fast: false
@@ -49,18 +64,20 @@ jobs:
 
   build-and-release:
     name: Build & Publish Release
-    needs: [windows-installer, native-validation]
+    needs: [version-check, windows-installer, native-validation]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Build with the same Go version that the validation jobs tested.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          check-latest: true
 
       - name: Build standalone binaries
         run: |

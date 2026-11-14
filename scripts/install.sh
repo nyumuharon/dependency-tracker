@@ -66,21 +66,25 @@ INSTALL_DIR="${DEP_TRACKER_INSTALL_DIR:-/usr/local/bin}"
 if [ -n "${DEP_TRACKER_INSTALL_DIR:-}" ]; then
   mkdir -p "$INSTALL_DIR"
 fi
-if [ ! -w "$INSTALL_DIR" ]; then
-  if command -v sudo >/dev/null 2>&1; then
-    echo "Installing to $INSTALL_DIR (requires sudo)..."
-    sudo cp "${TMP_DIR}/dep-tracker" "${INSTALL_DIR}/dep-tracker"
-    sudo chmod +x "${INSTALL_DIR}/dep-tracker"
-  else
-    INSTALL_DIR="${HOME}/.local/bin"
-    mkdir -p "$INSTALL_DIR"
-    cp "${TMP_DIR}/dep-tracker" "${INSTALL_DIR}/dep-tracker"
-    chmod +x "${INSTALL_DIR}/dep-tracker"
-    echo "Installed to $INSTALL_DIR (ensure this directory is in your PATH)."
-  fi
+# Copy next to the target and rename over it: replacing a running binary in
+# place can fail ("Text file busy"), and a rename never leaves a partial file.
+install_binary() {
+  "$@" cp "${TMP_DIR}/dep-tracker" "${INSTALL_DIR}/.dep-tracker.new"
+  "$@" chmod +x "${INSTALL_DIR}/.dep-tracker.new"
+  "$@" mv -f "${INSTALL_DIR}/.dep-tracker.new" "${INSTALL_DIR}/dep-tracker"
+}
+if [ -d "$INSTALL_DIR" ] && [ -w "$INSTALL_DIR" ]; then
+  install_binary
+elif command -v sudo >/dev/null 2>&1; then
+  # /usr/local/bin may not exist yet, for example on a new Apple Silicon Mac.
+  echo "Installing to $INSTALL_DIR (requires sudo)..."
+  sudo mkdir -p "$INSTALL_DIR"
+  install_binary sudo
 else
-  cp "${TMP_DIR}/dep-tracker" "${INSTALL_DIR}/dep-tracker"
-  chmod +x "${INSTALL_DIR}/dep-tracker"
+  INSTALL_DIR="${HOME}/.local/bin"
+  mkdir -p "$INSTALL_DIR"
+  install_binary
+  echo "Installed to $INSTALL_DIR (ensure this directory is in your PATH)."
 fi
 
 echo ""
