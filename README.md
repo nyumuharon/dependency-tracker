@@ -20,17 +20,7 @@ The tool combines a **Three-Layer Intelligent Dependency Discovery Engine** with
 
 ---
 
-## Architecture
-
-![dep-tracker architecture: a scan target goes through dependency discovery, vulnerability and maintenance intelligence, risk scoring, and reporting with a CI exit code](docs/images/architecture-overview.svg)
-
-A scan runs in four stages. **Discovery** finds every dependency and where its version came from. **Intelligence** collects advisories from OSV.dev, severity from the advisory or NIST NVD, exploitation signals from CISA KEV and FIRST EPSS, and release dates from the package registries. **Scoring** places each package in a risk tier, and **reporting** writes the terminal report, JSON, a CycloneDX SBOM and a SARIF file, then sets an exit code for CI.
-
----
-
 ## Supported Ecosystems & Three-Layer Discovery Matrix
-
-![Dependency discovery: walk the project tree, parse dependency files, inspect installed packages, scan source-code imports; exact versions are checked and ranges or imports are reported as unresolved](docs/images/dependency-discovery.svg)
 
 ### Layer 1: Manifests, Lockfiles & Build DSLs
 
@@ -38,7 +28,7 @@ A scan runs in four stages. **Discovery** finds every dependency and where its v
 | :--- | :--- | :--- | :--- | :--- |
 | **npm** | JavaScript, TypeScript | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | `package.json` (including `optionalDependencies` and `npm:` aliases) | `registry.npmjs.org` |
 | **PyPI** | Python | `poetry.lock`, `Pipfile.lock`, `uv.lock` | `requirements.txt` (with `-r` includes and `--hash` pins), `pyproject.toml` (PEP 621, dependency groups, Poetry, PDM, uv), `Pipfile`, `setup.py`, `setup.cfg`, `environment.yml` | `pypi.org` (JSON & RSS) |
-| **Maven / Gradle** | Java, Kotlin, Scala | `gradle.lockfile` | `pom.xml` (with nested `<properties>` & `<dependencyManagement>`), `build.gradle`, `build.gradle.kts`, `libs.versions.toml` | `search.maven.org` |
+| **Maven / Gradle** | Java, Kotlin, Scala | `gradle.lockfile` | `pom.xml` (with nested `<properties>`, `<dependencyManagement>`, parent POMs and imported BOMs), `build.gradle`, `build.gradle.kts`, `libs.versions.toml` | `search.maven.org` |
 | **NuGet** | C#, F#, .NET | `packages.lock.json`, `paket.lock` | `*.csproj`, `*.fsproj`, `*.vbproj` (with `$(Property)` versions and `VersionOverride`), `packages.config`, `Directory.Packages.props` | `api.nuget.org` |
 | **crates.io** | Rust | `Cargo.lock` | `Cargo.toml` (including renamed, workspace and platform-specific dependencies) | `crates.io` |
 | **Go** | Go | `go.sum` (checksum-history fallback) | `go.mod` (preferred; `replace` directives applied) | `proxy.golang.org` |
@@ -68,9 +58,42 @@ Wherever source code has no manifest, lockfile, or installed environment for its
 
 ---
 
-## Risk Scoring Matrix
+## Architectural Workflow
 
-![Risk scoring: severity comes from the advisory's CVSS vector, then NVD, then the advisory database rating; the first matching rule sets the advisory tier; the most severe advisory sets the package tier and the exit code](docs/images/risk-scoring.svg)
+```mermaid
+flowchart TD
+    Target["Target Input (Directory or Manifest/Lockfile)"] --> L1["Layer 1: Manifests, Lockfiles & Build DSLs (12 Ecosystems)"]
+    L1 --> L2["Layer 2: Installed Virtual & Vendor Environments (8 Runtimes)"]
+    L2 --> L3{"Language Covered by a Manifest or Env?"}
+    L3 -->|No| Fallback["Layer 3: Source-Code Import Extraction (10 Languages)"]
+    L3 -->|Yes| Dedupe["Dependency Deduplication & Installed-Version Pinning"]
+    Fallback --> Dedupe
+
+    Dedupe --> OSVBatch["Two-Phase OSV Batch Engine (/v1/querybatch -> /v1/vulns)"]
+    Dedupe --> Stale["Concurrent Multi-Registry Staleness Checker + 12h Disk Cache"]
+
+    OSVBatch --> LocalCVSS["In-Memory CVSS v3.1 Vector Calculator"]
+    LocalCVSS --> NVDCheck{"CVSS Resolved?"}
+    NVDCheck -->|No| NVDFallback["Rate-Paced NIST NVD 2.0 API + 24h Disk Cache, then Advisory Rating"]
+    NVDCheck -->|Yes| KEVCheck["CISA KEV Catalog Check"]
+    NVDFallback --> KEVCheck
+    KEVCheck --> EPSS["Batched FIRST.org EPSS 30-Day Probability"]
+
+    EPSS & Stale --> Scoring["Two-Dimensional Risk Matrix (CVSS + EPSS + CISA KEV)"]
+    Scoring --> Report["Prioritized Terminal Report & Upgrade Guidance"]
+    Scoring --> SBOM["CycloneDX v1.4 JSON SBOM (sbom.json)"]
+    Scoring --> SARIF["OASIS SARIF v2.1.0 Report (results.sarif)"]
+
+    Report --> Complete{"All Checks Complete?"}
+    Complete -->|No| ExitIncomplete["Exit Code 2 (Incomplete Scan)"]
+    Complete -->|Yes| Gate{"Critical-Exploitable Detected?"}
+    Gate -->|Yes| ExitFail["Exit Code 1 (CI/CD Policy Failure)"]
+    Gate -->|No| ExitPass["Exit Code 0 (Passed)"]
+```
+
+---
+
+## Risk Scoring Matrix
 
 | Priority Tier | Qualification Criteria | Description |
 | :--- | :--- | :--- |
@@ -219,7 +242,7 @@ Each JSON package result includes `ScanStatus` (`complete` or `incomplete`), `Ch
 
 Discovery keeps going when something cannot be read: an unreadable folder or a malformed manifest is reported with its path, the readable dependencies are still checked, and the scan exits with code `2`. Folders named `build`, `dist`, `target` or `bin` are skipped only when they sit next to a dependency file (where they hold build output); elsewhere they are scanned like any other project folder. A Python virtual environment is recognised by its `pyvenv.cfg`, whatever its name. An installed version replaces the version declared in a manifest of the same project, including a pin that the environment does not match.
 
-Manifest details that change which package or version is checked: `requirements.txt` follows `-r` includes, joins `\` continuations and ignores `--hash` options; `go.mod` applies `replace` directives (a replacement by a local directory is not checked); npm and Yarn aliases (`"alias": "npm:real@1.0.0"`) are checked as the real package; Cargo renamed, workspace and platform-specific dependencies are included, while path, Git and workspace-local crates are not; Maven `dependencyManagement` pins are included but imported BOMs are not. vcpkg ports are checked under their ConanCenter names, because OSV has no vcpkg ecosystem; where the two names differ (vcpkg `curl`, Conan `libcurl`), findings can be missed.
+Manifest details that change which package or version is checked: `requirements.txt` follows `-r` includes, joins `\` continuations and ignores `--hash` options; `go.mod` applies `replace` directives (a replacement by a local directory is not checked); npm and Yarn aliases (`"alias": "npm:real@1.0.0"`) are checked as the real package; Cargo renamed, workspace and platform-specific dependencies are included, while path, Git and workspace-local crates are not; Maven `dependencyManagement` pins are included but imported BOMs are not. A Maven dependency declared without a version takes it from the project's parent POMs and imported BOMs, as Maven does: a parent in the checkout (`<relativePath>`, `../pom.xml` by default) is used first, otherwise parents and BOMs are fetched from Maven Central (only when a version is still missing) and cached, since a published POM never changes. If a version still cannot be found, the dependency is reported as unresolved rather than left out. A NuGet `Version="1.2.3"` is treated as exact, because NuGet restores the lowest version that satisfies it; ranges such as `[1.0,2.0)` and floating versions such as `8.*` are unresolved. Local workspace packages (pnpm `file:`/`link:` entries, Bundler `PATH` gems) are the project's own code and are not checked. vcpkg ports are checked under their ConanCenter names, because OSV has no vcpkg ecosystem; where the two names differ (vcpkg `curl`, Conan `libcurl`), findings can be missed.
 
 Source-code imports are matched to local modules per project: a Python folder counts as local only when it has `__init__.py`, and a module never hides the package it is named after (`celery.py` may import `celery`). Imports are reported per ecosystem, so a `package.json` does not hide the Python imports beside it.
 

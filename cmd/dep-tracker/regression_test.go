@@ -77,7 +77,9 @@ func TestVersionConstraintsAndExactPins(t *testing.T) {
 		{"package.json", `{"dependencies":{"range":"^1.2.3","pin":"1.2.3","wildcard":"*"}}`, map[string]bool{"range": false, "pin": true, "wildcard": false}},
 		{"requirements.txt", "requests>=2.0,<3\nflask==2.3.0\nhttpx\n", map[string]bool{"requests": false, "flask": true, "httpx": false}},
 		{"Cargo.toml", "[dependencies]\nrange = \"1.2.3\"\npin = \"=1.2.3\"\n", map[string]bool{"range": false, "pin": true}},
-		{"app.csproj", `<Project><ItemGroup><PackageReference Include="range" Version="1.2.3"/><PackageReference Include="pin" Version="[1.2.3]"/></ItemGroup></Project>`, map[string]bool{"range": false, "pin": true}},
+		// NuGet restores the lowest version satisfying a plain version, which
+		// is that version; only real ranges and floating versions are unresolved.
+		{"app.csproj", `<Project><ItemGroup><PackageReference Include="plain" Version="1.2.3"/><PackageReference Include="pin" Version="[1.2.3]"/><PackageReference Include="range" Version="[1.0,2.0)"/><PackageReference Include="floating" Version="8.*"/></ItemGroup></Project>`, map[string]bool{"plain": true, "pin": true, "range": false, "floating": false}},
 	}
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
@@ -527,6 +529,10 @@ func TestStaleKEVCacheIsUsefulButIncomplete(t *testing.T) {
 func init() {
 	nvdSleep = func(time.Duration) {}
 	nvdWindow = 0
+	// Unit tests never reach Maven Central; tests that need a repository
+	// mock httpClient. Port 1 refuses connections immediately.
+	mavenRepositoryURL = "http://127.0.0.1:1/maven2"
+	mavenSleep = func(time.Duration) {}
 }
 
 func TestNVDRateLimitAndRetry(t *testing.T) {

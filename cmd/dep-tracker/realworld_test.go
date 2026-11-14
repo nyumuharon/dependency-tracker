@@ -79,6 +79,27 @@ func TestRealWorldInventories(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			// The scanned crate itself is the application, not a dependency.
+			if tc.kind == "rust-crate" {
+				raw, err := os.ReadFile(filepath.Join(project, "Cargo.toml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				inPackage := false
+				for _, line := range strings.Split(string(raw), "\n") {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "[") {
+						inPackage = line == "[package]"
+					} else if field, value, ok := strings.Cut(line, "="); ok && inPackage {
+						switch strings.TrimSpace(field) {
+						case "name":
+							application.Name = strings.Trim(strings.TrimSpace(value), `"`)
+						case "version":
+							application.Version = strings.Trim(strings.TrimSpace(value), `"`)
+						}
+					}
+				}
+			}
 			normalize := func(name string) string {
 				if tc.eco == "PyPI" {
 					return strings.ReplaceAll(strings.ToLower(name), "_", "-")
@@ -89,7 +110,7 @@ func TestRealWorldInventories(t *testing.T) {
 				got[normalize(p.Name)+"@"+p.Version] = true
 			}
 			for _, p := range bom.Artifacts {
-				if p.Type == tc.kind && p.Name != "stdlib" && !(tc.kind == "npm" && p.Name == application.Name && p.Version == application.Version) {
+				if p.Type == tc.kind && p.Name != "stdlib" && !(p.Name == application.Name && p.Version == application.Version) {
 					want[normalize(p.Name)+"@"+p.Version] = true
 				}
 			}

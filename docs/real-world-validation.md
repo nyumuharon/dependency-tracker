@@ -17,6 +17,31 @@ All 1,085 inventory entries matched across these four pinned projects. This
 checks package identities and versions, not reachability or exploitability.
 Other revisions, formats, and dependency managers need their own validation.
 
+## Additional ecosystems — 15 November 2026
+
+Eight more projects were compared with checksum-verified Syft 1.55.0 on the same
+files. Rerunning the four comparisons above after the 1.1.0 parser changes still
+gives 0 missing and 0 extra entries (bat's own root crate is now excluded, like
+an npm application's root record).
+
+| Project | Pinned commit | Input | Tracker | Syft | Result |
+| --- | --- | --- | ---: | ---: | --- |
+| [React](https://github.com/facebook/react) | `df6aa4ec76cff5b3adde531c6fe8c36099e0469b` | `yarn.lock` | 2,042 | 2,042 | Exact match |
+| [Flask](https://github.com/pallets/flask) | `49943b5a94413a530761350f04e896f76e8d620e` | `uv.lock` | 79 | 79 | Exact match |
+| [Pydantic](https://github.com/pydantic/pydantic) | `560f0f96a37d6913afdfddb2de22030ef08e68c3` | `uv.lock` | 165 | 167 | Match; Syft's two extra entries are the project's own editable packages, with no version |
+| [Symfony Demo](https://github.com/symfony/demo) | `f42980c690b4bf335fa41bbafdb075bb67b719c2` | `composer.lock` | 155 | 101 | Match; the tracker strips the `v` version prefix and includes the 54 `packages-dev` entries |
+| [Vite](https://github.com/vitejs/vite) | `f898888222297aa56d6fc281c585d4d4e4d51f58` | `pnpm-lock.yaml` | 1,208 | 1,330 | Match after a fix; the 122 Syft-only entries are local `file:` workspace folders |
+| [Rails](https://github.com/rails/rails) | `50c54eed065b8bfb1b0bbb5fa770c859baa98f9b` | `Gemfile.lock` | 219 | 269 | Match after a fix; Syft also lists Rails' own `PATH` gems and each platform build of a gem separately |
+| [Spring Petclinic](https://github.com/spring-projects/spring-petclinic) | `500158f732419217507c7656904b8e6aa1bcc0d6` | `pom.xml` | 28 | 29 | Fixed; Syft lists 25 dependencies with unknown versions (inherited from the Spring Boot parent) and the project itself; the tracker now resolves them through the parent POM chain |
+| [eShop](https://github.com/dotnet/eShop) | `913acea66708a59595351174cee9b29f37179d29` | directory | 89 NuGet | — | Syft does not read `Directory.Packages.props`; every package referenced by a `.csproj` was found |
+
+These comparisons found four defects, fixed in the release after 1.1.0:
+
+- **Maven:** dependencies whose versions come from a parent POM were silently left out (3 of 28 found for Petclinic). Versions are now resolved through parent POMs and imported BOMs.
+- **NuGet:** every plain `Version="…"` was treated as a range, so .NET projects were never checked.
+- **pnpm:** local `file:` workspace folders were reported as unresolved, so every pnpm monorepo scan was incomplete.
+- **Bundler:** the project's own `PATH` gems were looked up as published gems.
+
 ## Full online scans
 
 Actual release-source scanner executions queried OSV, NVD, EPSS, KEV and package

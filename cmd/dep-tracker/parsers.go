@@ -253,10 +253,12 @@ func ParseManifest(filePath string) ([]Package, error) {
 		if base == "project.assets.json" || base == "installed.json" || base == "package_config.json" {
 			p.VersionSource = "installed"
 		}
-		nugetRange := p.Ecosystem == "NuGet" && p.VersionSource == "manifest" && base != "packages.config" && !(strings.HasPrefix(p.Version, "[") && strings.HasSuffix(p.Version, "]") && !strings.Contains(p.Version, ","))
+		// NuGet restores the lowest version that satisfies a plain
+		// Version="1.2.3", which is that version itself, so it counts as exact;
+		// real ranges ([1.0,2.0), 1.*) fail the exact-version check below.
 		cargoRange := base == "cargo.toml" && !strings.HasPrefix(p.Version, "=")
 		p.Version = normalizeExactPin(p.Version, p.Ecosystem)
-		if (!exactVersionRE.MatchString(p.Version) || wildcardVersionRE.MatchString(p.Version)) || cargoRange || nugetRange || base == "cmakelists.txt" {
+		if (!exactVersionRE.MatchString(p.Version) || wildcardVersionRE.MatchString(p.Version)) || cargoRange || base == "cmakelists.txt" {
 			p.VersionSource = "constraint"
 		}
 	}
@@ -820,11 +822,17 @@ func parseRubyGem(filePath string) ([]Package, error) {
 	var pkgs []Package
 	scanner := bufio.NewScanner(f)
 	inSpecs := false
+	section := "" // GEM, GIT or PATH
 
 	for scanner.Scan() {
 		rawLine := scanner.Text()
 		trimmed := strings.TrimSpace(rawLine)
-		if trimmed == "specs:" {
+		if trimmed != "" && !strings.HasPrefix(rawLine, " ") && !strings.HasPrefix(rawLine, "\t") {
+			section = trimmed
+		}
+		// PATH gems are local source folders (often the project itself), not
+		// published gems.
+		if trimmed == "specs:" && section != "PATH" {
 			inSpecs = true
 			continue
 		}
@@ -1051,6 +1059,11 @@ func parsePnpmLock(filePath string) ([]Package, error) {
 			pkgSpec = strings.Trim(pkgSpec, `"' `)
 			pkgSpec = strings.TrimPrefix(pkgSpec, "/")
 			pkgSpec = strings.SplitN(pkgSpec, "(", 2)[0]
+			// Workspace folders (file:, link:, workspace:) are the project's
+			// own code, not registry packages.
+			if strings.Contains(pkgSpec, "@file:") || strings.Contains(pkgSpec, "@link:") || strings.Contains(pkgSpec, "@workspace:") {
+				continue
+			}
 			lastAt := strings.Index(pkgSpec, "@")
 			if strings.HasPrefix(pkgSpec, "@") {
 				lastAt = strings.Index(pkgSpec[1:], "@") + 1
@@ -2426,98 +2439,6 @@ func tryParseGenericXML(filePath string, data []byte) ([]Package, bool) {
 		}
 	}
 	return nil, false
-}
-
-func parseMavenWithProperties(filePath string, data []byte) ([]Package, error) {
-	type rawProp struct {
-		XMLName xml.Name
-		Value   string `xml:",chardata"`
-	}
-	var pom struct {
-		Version string `xml:"version"`
-		Parent  struct {
-			Version string `xml:"version"`
-		} `xml:"parent"`
-		Properties struct {
-			Entries []rawProp `xml:",any"`
-		} `xml:"properties"`
-		Dependencies []mavenDep `xml:"dependencies>dependency"`
-		DepMgmt      []mavenDep `xml:"dependencyManagement>dependencies>dependency"`
-	}
-	if err := xml.Unmarshal(data, &pom); err != nil {
-		return nil, err
-	}
-
-	props := make(map[string]string)
-	if pom.Version != "" {
-		props["project.version"] = strings.TrimSpace(pom.Version)
-		props["pom.version"] = strings.TrimSpace(pom.Version)
-	} else if pom.Parent.Version != "" {
-		props["project.version"] = strings.TrimSpace(pom.Parent.Version)
-		props["project.parent.version"] = strings.TrimSpace(pom.Parent.Version)
-	}
-	for _, entry := range pom.Properties.Entries {
-		props[entry.XMLName.Local] = strings.TrimSpace(entry.Value)
-	}
-
-	// Properties may refer to other properties and be embedded in text
-	// ("${major}.${minor}"). Unknown or cyclic references stay unresolved.
-	resolveProp := func(val string) string {
-		val = strings.TrimSpace(val)
-		for depth := 0; depth < 10 && strings.Contains(val, "${"); depth++ {
-			start := strings.Index(val, "${")
-			end := strings.Index(val[start:], "}")
-			if end == -1 {
-				break
-			}
-			resolved, ok := props[val[start+2:start+end]]
-			if !ok {
-				break
-			}
-			val = val[:start] + resolved + val[start+end+1:]
-		}
-		return val
-	}
-
-	// dependencyManagement supplies versions for dependencies declared without
-	// one, and pins the versions of child-module and transitive dependencies,
-	// so its entries are reported. An imported BOM (scope import) is only a
-	// list of versions, not a dependency.
-	managed := make(map[string]string)
-	var allDeps []mavenDep
-	for _, dep := range pom.DepMgmt {
-		managed[resolveProp(dep.GroupID)+":"+resolveProp(dep.ArtifactID)] = dep.Version
-		if strings.TrimSpace(dep.Scope) != "import" {
-			allDeps = append(allDeps, dep)
-		}
-	}
-	for _, dep := range pom.Dependencies {
-		if strings.TrimSpace(dep.Version) == "" {
-			dep.Version = managed[resolveProp(dep.GroupID)+":"+resolveProp(dep.ArtifactID)]
-		}
-		allDeps = append(allDeps, dep)
-	}
-	var pkgs []Package
-	seen := make(map[string]bool)
-	for _, dep := range allDeps {
-		ver := resolveProp(dep.Version)
-		group := resolveProp(dep.GroupID)
-		artifact := resolveProp(dep.ArtifactID)
-		if group == "" || artifact == "" || ver == "" || strings.Contains(ver, "${") {
-			continue
-		}
-		p := Package{
-			Name:         group + ":" + artifact,
-			Version:      ver,
-			Ecosystem:    "Maven",
-			ManifestPath: filePath,
-		}
-		if !seen[p.Key()] {
-			seen[p.Key()] = true
-			pkgs = append(pkgs, p)
-		}
-	}
-	return pkgs, nil
 }
 
 func parseDotNetXML(filePath string, data []byte) ([]Package, error) {

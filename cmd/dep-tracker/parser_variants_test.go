@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -102,7 +105,9 @@ func TestXMLVersionAndPropertyVariants(t *testing.T) {
 		for _, version := range []string{"<version>1.2.3</version>", "<parent><version>1.2.3</version></parent>"} {
 			body := `<project>` + version + `<dependencies><dependency><groupId>org.example</groupId><artifactId>library</artifactId><version>${project.version}</version></dependency><dependency><groupId>org.example</groupId><artifactId>unknown</artifactId><version>${unresolved}</version></dependency><dependency><artifactId>missing-group</artifactId><version>1.0.0</version></dependency></dependencies></project>`
 			pkgs, err := parseMavenWithProperties("fixture", []byte(body))
-			if err != nil || len(pkgs) != 1 || pkgs[0].Version != "1.2.3" {
+			// An unresolvable version is reported as written, so the scan is
+			// marked incomplete instead of silently dropping the dependency.
+			if err != nil || len(pkgs) != 2 || pkgs[0].Version != "1.2.3" || pkgs[1].Version != "${unresolved}" {
 				t.Fatalf("%+v %v", pkgs, err)
 			}
 		}
@@ -280,8 +285,10 @@ func TestParserAccuracyFixes(t *testing.T) {
 			map[string]string{"lodash": "^4.17.0", "minimist": "1.2.0"}},
 		{"conan2-lock", "conan.lock", `{"version":"0.5","requires":["zlib/1.2.11#abc%1690000000.0","openssl/3.0.0@user/channel#def"],"build_requires":["cmake/3.27.0"],"python_requires":[]}`, parseConanLock,
 			map[string]string{"zlib": "1.2.11", "openssl": "3.0.0", "cmake": "3.27.0"}},
-		{"gemfile-lock-platform", "Gemfile.lock", "GEM\n  remote: https://rubygems.org/\n  specs:\n    nokogiri (1.10.0-x86_64-linux)\n    rack (2.0.0)\n\nPLATFORMS\n  x86_64-linux\n", parseRubyGem,
+		{"gemfile-lock-platform-and-path", "Gemfile.lock", "PATH\n  remote: .\n  specs:\n    myapp (0.1.0)\n\nGEM\n  remote: https://rubygems.org/\n  specs:\n    nokogiri (1.10.0-x86_64-linux)\n    rack (2.0.0)\n\nPLATFORMS\n  x86_64-linux\n", parseRubyGem,
 			map[string]string{"nokogiri": "1.10.0", "rack": "2.0.0"}},
+		{"pnpm-workspace-folders", "pnpm-lock.yaml", "lockfileVersion: '9.0'\n\npackages:\n\n  '@scope/local@file:packages/local':\n    resolution: {directory: packages/local, type: directory}\n\n  linked@link:../linked:\n    resolution: {directory: ../linked}\n\n  lodash@4.17.21:\n    resolution: {integrity: sha512-x}\n", parsePnpmLock,
+			map[string]string{"lodash": "4.17.21"}},
 		{"maven-properties-and-management", "pom.xml", `<project><properties><base>2.9.8</base><jackson.version>${base}</jackson.version><cycle>${cycle}</cycle><major>1</major></properties>
 <dependencyManagement><dependencies>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-dependencies</artifactId><version>2.0.0</version><type>pom</type><scope>import</scope></dependency>
@@ -294,7 +301,7 @@ func TestParserAccuracyFixes(t *testing.T) {
 <dependency><groupId>org.example</groupId><artifactId>cyclic</artifactId><version>${cycle}</version></dependency>
 <dependency><groupId>org.example</groupId><artifactId>unterminated</artifactId><version>${oops</version></dependency>
 </dependencies></project>`, parseMaven,
-			map[string]string{"org.yaml:snakeyaml": "1.26", "com.fasterxml.jackson.core:jackson-databind": "2.9.8", "org.example:composed": "1.2"}},
+			map[string]string{"org.yaml:snakeyaml": "1.26", "com.fasterxml.jackson.core:jackson-databind": "2.9.8", "org.example:composed": "1.2", "org.example:cyclic": "${cycle}", "org.example:unterminated": "${oops"}},
 		{"csproj-properties-and-overrides", "app.csproj", `<Project><PropertyGroup><NJ>13.0.1</NJ><Chain>$(NJ)</Chain></PropertyGroup><ItemGroup>
 <PackageReference Include="Newtonsoft.Json" Version="$(Chain)" />
 <PackageReference Include="Serilog" VersionOverride="2.10.0" />
@@ -334,5 +341,183 @@ func TestLockfilesTakePrecedencePerEcosystem(t *testing.T) {
 	}
 	if got := filterDirManifests([]string{"go.sum"}); len(got) != 1 {
 		t.Fatalf("go.sum without go.mod dropped: %v", got)
+	}
+}
+
+// useMavenRepository serves POMs from files (path relative to the repository
+// root) and counts requests; it resets the per-run and disk caches.
+func useMavenRepository(t *testing.T, files map[string]string, status map[string][]int) map[string]int {
+	t.Helper()
+	t.Setenv("DEP_TRACKER_CACHE_DIR", t.TempDir())
+	oldURL := mavenRepositoryURL
+	mavenRepositoryURL = "https://repo.test/maven2"
+	mavenPOMCacheMu.Lock()
+	mavenPOMCache = map[string]mavenFetchResult{}
+	mavenPOMCacheMu.Unlock()
+	mavenRateLimited.Store(false)
+	t.Cleanup(func() {
+		mavenRateLimited.Store(false)
+		mavenRepositoryURL = oldURL
+		mavenPOMCacheMu.Lock()
+		mavenPOMCache = map[string]mavenFetchResult{}
+		mavenPOMCacheMu.Unlock()
+	})
+	calls := map[string]int{}
+	mockHTTP(t, func(r *http.Request) (*http.Response, error) {
+		path := strings.TrimPrefix(r.URL.Path, "/maven2/")
+		calls[path]++
+		if codes := status[path]; len(codes) >= calls[path] {
+			resp := response(codes[calls[path]-1], "")
+			resp.Header.Set("Retry-After", "1")
+			return resp, nil
+		}
+		if path == "offline/x/1/x-1.pom" {
+			return nil, errors.New("offline")
+		}
+		body, ok := files[path]
+		if !ok {
+			return response(404, ""), nil
+		}
+		return response(200, body), nil
+	})
+	return calls
+}
+
+func TestMavenParentsAndImportedBOMs(t *testing.T) {
+	files := map[string]string{
+		// starter parent -> dependencies parent, which manages versions and imports a BOM.
+		"org/example/starter-parent/1.0/starter-parent-1.0.pom": `<project><parent><groupId>org.example</groupId><artifactId>dependencies</artifactId><version>1.0</version></parent>
+<artifactId>starter-parent</artifactId><properties><java.version>21</java.version></properties></project>`,
+		"org/example/dependencies/1.0/dependencies-1.0.pom": `<project><groupId>org.example</groupId><artifactId>dependencies</artifactId><version>1.0</version>
+<properties><lib.version>2.0.0</lib.version><bom.version>3.0</bom.version></properties>
+<dependencyManagement><dependencies>
+<dependency><groupId>org.example</groupId><artifactId>lib</artifactId><version>${lib.version}</version></dependency>
+<dependency><groupId>org.example</groupId><artifactId>starter</artifactId><version>${project.version}</version></dependency>
+<dependency><groupId>org.unused</groupId><artifactId>unused-bom</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency>
+<dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>${bom.version}</version><type>pom</type><scope>import</scope></dependency>
+<dependency><groupId>org.later</groupId><artifactId>never-fetched</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency>
+</dependencies></dependencyManagement></project>`,
+		"org/bom/bom/3.0/bom-3.0.pom": `<project><properties><tc.version>4.4.4</tc.version></properties><dependencyManagement><dependencies>
+<dependency><groupId>org.tc</groupId><artifactId>tc</artifactId><version>${tc.version}</version></dependency>
+<dependency><groupId>org.example</groupId><artifactId>lib</artifactId><version>9.9.9</version></dependency>
+</dependencies></dependencyManagement></project>`,
+		"org/unused/unused-bom/1/unused-bom-1.pom": `<project><dependencyManagement><dependencies>
+<dependency><groupId>org.other</groupId><artifactId>other</artifactId><version>1</version></dependency>
+</dependencies></dependencyManagement></project>`,
+	}
+	calls := useMavenRepository(t, files, map[string][]int{"org/bom/bom/3.0/bom-3.0.pom": {429}})
+	// The child overrides the parent's lib.version, as Maven allows.
+	pom := `<project><parent><groupId>org.example</groupId><artifactId>starter-parent</artifactId><version>1.0</version></parent>
+<artifactId>app</artifactId><properties><lib.version>2.1.0</lib.version></properties><dependencies>
+<dependency><groupId>org.example</groupId><artifactId>lib</artifactId></dependency>
+<dependency><groupId>org.example</groupId><artifactId>starter</artifactId></dependency>
+<dependency><groupId>org.tc</groupId><artifactId>tc</artifactId></dependency>
+</dependencies></project>`
+	path := writeFixture(t, t.TempDir(), "pom.xml", pom)
+	pkgs, err := parseMaven(path)
+	want := map[string]string{"org.example:lib": "2.1.0", "org.example:starter": "1.0", "org.tc:tc": "4.4.4"}
+	if got := pkgVersions(pkgs); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v (%v), want %v", got, err, want)
+	}
+	if calls["org/bom/bom/3.0/bom-3.0.pom"] != 2 || calls["org/later/never-fetched/1/never-fetched-1.pom"] != 0 {
+		t.Fatalf("rate-limit retry or lazy import fetching failed: %v", calls)
+	}
+	// A second run reads released POMs from the disk cache.
+	mavenPOMCacheMu.Lock()
+	mavenPOMCache = map[string]mavenFetchResult{}
+	mavenPOMCacheMu.Unlock()
+	before := len(calls)
+	total := 0
+	for _, n := range calls {
+		total += n
+	}
+	if _, err := parseMaven(path); err != nil {
+		t.Fatal(err)
+	}
+	after := 0
+	for _, n := range calls {
+		after += n
+	}
+	if len(calls) != before || after != total {
+		t.Fatalf("released POMs were downloaded again: %v", calls)
+	}
+}
+
+func TestMavenParentLookupAndFailures(t *testing.T) {
+	files := map[string]string{
+		"org/snap/parent/1.0-SNAPSHOT/parent-1.0-SNAPSHOT.pom": `<project><properties><v>5.0</v></properties><dependencyManagement><dependencies>
+<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>${v}</version></dependency></dependencies></dependencyManagement></project>`,
+		"org/bad/parent/1/parent-1.pom": `<project`,
+		"org/badbom/parent/1/parent-1.pom": `<project><dependencyManagement><dependencies>
+<dependency><groupId>org.badbom</groupId><artifactId>bom</artifactId><version>1</version><scope>import</scope></dependency>
+<dependency><groupId>offline</groupId><artifactId>x</artifactId><version>1</version><scope>import</scope></dependency>
+<dependency><groupId>org.self</groupId><artifactId>self</artifactId><version>1</version><scope>import</scope></dependency>
+</dependencies></dependencyManagement></project>`,
+		"org/badbom/bom/1/bom-1.pom": `<project`,
+		// A BOM that imports itself stops at the depth limit.
+		"org/self/self/1/self-1.pom": `<project><dependencyManagement><dependencies>
+<dependency><groupId>org.self</groupId><artifactId>self</artifactId><version>1</version><scope>import</scope></dependency>
+</dependencies></dependencyManagement></project>`,
+	}
+	calls := useMavenRepository(t, files, map[string][]int{"org/busy/parent/1/parent-1.pom": {503, 503, 503}})
+	// An unresolvable managed pin is not reported; an unresolvable dependency is.
+	dep := `<dependencyManagement><dependencies><dependency><groupId>org.pin</groupId><artifactId>pin</artifactId><version>${unknown}</version></dependency></dependencies></dependencyManagement><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId></dependency></dependencies>`
+	cases := []struct {
+		name, parent, want string
+	}{
+		{"snapshot-not-cached", `<groupId>org.snap</groupId><artifactId>parent</artifactId><version>1.0-SNAPSHOT</version>`, "5.0"},
+		{"malformed-remote-parent", `<groupId>org.bad</groupId><artifactId>parent</artifactId><version>1</version>`, "unspecified"},
+		{"malformed-and-unavailable-boms", `<groupId>org.badbom</groupId><artifactId>parent</artifactId><version>1</version>`, "unspecified"},
+		{"persistently-busy", `<groupId>org.busy</groupId><artifactId>parent</artifactId><version>1</version>`, "unspecified"},
+		{"unresolved-coordinates", `<groupId>org.x</groupId><artifactId>parent</artifactId><version>${missing}</version>`, "unspecified"},
+	}
+	for _, tc := range cases {
+		path := writeFixture(t, t.TempDir(), "pom.xml", `<project><parent>`+tc.parent+`</parent>`+dep+`</project>`)
+		pkgs, err := parseMaven(path)
+		if got := pkgVersions(pkgs)["org.x:x"]; err != nil || got != tc.want {
+			t.Errorf("%s: got %q (%v), want %q", tc.name, got, err, tc.want)
+		}
+	}
+	if calls["org/busy/parent/1/parent-1.pom"] != mavenAttempts {
+		t.Fatalf("busy repository not retried: %v", calls)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(os.Getenv("DEP_TRACKER_CACHE_DIR"), "maven")); len(entries) == 0 {
+		t.Fatal("released POMs were not cached on disk")
+	} else {
+		for _, e := range entries {
+			if strings.Contains(e.Name(), "SNAPSHOT") {
+				t.Fatalf("snapshot cached: %s", e.Name())
+			}
+		}
+	}
+
+	// Local parents: <relativePath> to a folder, the ../pom.xml default, and a
+	// file whose artifactId does not match, which is not used.
+	root := t.TempDir()
+	writeFixture(t, root, "parent/pom.xml", `<project><artifactId>local-parent</artifactId><properties><v>6.0</v></properties>
+<dependencyManagement><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>${v}</version></dependency></dependencies></dependencyManagement></project>`)
+	child := writeFixture(t, root, "app/pom.xml", `<project><parent><groupId>g</groupId><artifactId>local-parent</artifactId><version>1</version><relativePath>../parent</relativePath></parent>`+dep+`</project>`)
+	writeFixture(t, root, "pom.xml", `<project><artifactId>local-parent</artifactId><properties><v>7.0</v></properties>
+<dependencyManagement><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>${v}</version></dependency></dependencies></dependencyManagement></project>`)
+	defaulted := writeFixture(t, root, "module/pom.xml", `<project><parent><groupId>g</groupId><artifactId>local-parent</artifactId><version>1</version></parent>`+dep+`</project>`)
+	mismatch := writeFixture(t, root, "other/pom.xml", `<project><parent><groupId>g</groupId><artifactId>remote-only</artifactId><version>1</version></parent>`+dep+`</project>`)
+	cyclic := writeFixture(t, root, "cycle/pom.xml", `<project><artifactId>cycle</artifactId><parent><groupId>g</groupId><artifactId>cycle</artifactId><version>1</version><relativePath>pom.xml</relativePath></parent>`+dep+`</project>`)
+	for path, want := range map[string]string{child: "6.0", defaulted: "7.0", mismatch: "unspecified", cyclic: "unspecified"} {
+		pkgs, err := parseMaven(path)
+		if got := pkgVersions(pkgs)["org.x:x"]; err != nil || got != want {
+			t.Errorf("%s: got %q (%v), want %q", path, got, err, want)
+		}
+	}
+	if _, err := fetchMavenPOM("g", "a", ""); err == nil {
+		t.Fatal("incomplete coordinates fetched")
+	}
+
+	// Once the repository keeps answering 429, later requests are skipped.
+	limited := useMavenRepository(t, files, map[string][]int{"org/a/a/1/a-1.pom": {429, 429, 429}})
+	if _, err := fetchMavenPOM("org.a", "a", "1"); err == nil || !mavenRateLimited.Load() {
+		t.Fatal("persistent rate limiting not detected")
+	}
+	if _, err := fetchMavenPOM("org.snap", "parent", "1.0-SNAPSHOT"); err == nil || limited["org/snap/parent/1.0-SNAPSHOT/parent-1.0-SNAPSHOT.pom"] != 0 {
+		t.Fatalf("requests continued while rate-limited: %v", limited)
 	}
 }
