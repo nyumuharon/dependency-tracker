@@ -78,11 +78,16 @@ HOW DEPENDENCIES ARE FOUND
   Layer 1  Manifests & lockfiles: npm/yarn/pnpm, PyPI (requirements, poetry,
            Pipfile, uv, pyproject), Maven/Gradle, NuGet, Cargo, Go modules,
            Composer, RubyGems, Conan/vcpkg/CMake, Pub, Hex, SwiftPM.
-  Layer 2  Installed environments: venv/.venv, node_modules,
+           A lockfile takes precedence over the manifest beside it.
+  Layer 2  Installed environments, read where no lockfile exists: Python
+           virtual environments (any folder with pyvenv.cfg), node_modules,
            obj/project.assets.json, vendor/composer/installed.json,
            vendor/modules.txt, vendor/bundle, vcpkg_installed, .dart_tool.
-  Layer 3  Source-code imports (used when no manifest exists): Python,
-           JS/TS, Go, Rust, C/C++, Java/Kotlin, C#, PHP, Ruby, Dart.
+           The installed version replaces the version a manifest declares.
+  Layer 3  Source-code imports, for each language that no manifest or
+           environment covers: Python, JS/TS, Go, Rust, C/C++, Java/Kotlin,
+           C#, PHP, Ruby, Dart. Their versions are unknown, so they are
+           reported as unresolved rather than checked.
 
 PRIORITY TIERS
   CRITICAL-EXPLOITABLE  In the CISA KEV catalog, or CVSS >= 7.0 and EPSS >= 0.20
@@ -99,6 +104,11 @@ EXIT CODES
   0  Scan finished; no CRITICAL-EXPLOITABLE packages found.
   1  CRITICAL-EXPLOITABLE package found, or invalid arguments/path.
   2  Scan incomplete: unresolved versions, failed checks, or failed report export.
+
+ENVIRONMENT
+  NVD_API_KEY            NIST NVD API key; raises NVD's rate limit, which makes
+                         scans that need many severity lookups faster.
+  DEP_TRACKER_CACHE_DIR  Folder for cached NVD, registry and CISA KEV data.
 
 EXAMPLES
   dep-tracker scan .                            Scan the current project
