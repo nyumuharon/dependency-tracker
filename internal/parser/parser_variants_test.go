@@ -1,4 +1,4 @@
-package main
+package parser
 
 import (
 	"encoding/json"
@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/nyumuharon/dependency-tracker/internal/intel"
 )
 
 func TestCargoAndPythonManifestVariants(t *testing.T) {
@@ -229,11 +231,11 @@ func TestOptionalFileAndContentDispatch(t *testing.T) {
 			t.Error(name)
 		}
 	}
-	var response osvResponse
+	var response intel.OSVResponse
 	if err := json.Unmarshal([]byte(`{"vulns":[]}`), &response); err != nil {
 		t.Fatal(err)
 	}
-	if got := parseVulns(response, Package{}); len(got) != 0 {
+	if got := intel.ParseVulns(response, Package{}); len(got) != 0 {
 		t.Fatal("empty advisories invented")
 	}
 	if _, err := parseMixLock("fixture", "%{unsupported}"); err == nil {

@@ -71,4 +71,4 @@ jobs:
       - name: Compare dependency inventory against Syft
         env:
           SYFT_BINARY: ${{ runner.temp }}/syft/syft
-        run: go test ./cmd/dep-tracker -run TestNpmInventoryAgainstSyft -v -count=1
+        run: go test ./internal/parser -run TestNpmInventoryAgainstSyft -v -count=1

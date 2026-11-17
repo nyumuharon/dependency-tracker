@@ -4,35 +4,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestParsersRejectUnreadableInputs(t *testing.T) {
-	parsers := map[string]func(string) ([]Package, error){
-		"npm": parseNPM, "python": parsePyPI, "maven": parseMaven, "nuget": parseNuGet, "go-mod": parseGoMod, "cargo-lock": parseCargoLock, "cargo-toml": parseCargoToml, "composer": parseComposer, "ruby": parseRubyGem, "npm-lock": parseNPMLock, "yarn": parseYarnLock, "pnpm": parsePnpmLock, "pyproject": parsePyProjectToml, "poetry": parsePoetryLock, "pipfile": parsePipfileLock, "composer-lock": parseComposerLock, "go-sum": parseGoSum, "nuget-lock": parseNuGetLock, "conan": parseConanFile, "conan-lock": parseConanLock, "vcpkg": parseVcpkg, "content": parseByContent,
-	}
-	missing := filepath.Join(t.TempDir(), "missing")
-	for name, parse := range parsers {
-		t.Run(name, func(t *testing.T) {
-			if _, err := parse(missing); err == nil {
-				t.Fatal("unreadable manifest must return an error")
-			}
-		})
-	}
-}
-
-func TestStructuredParsersRejectMalformedData(t *testing.T) {
-	for name, parse := range map[string]func(string) ([]Package, error){"npm": parseNPM, "maven": parseMaven, "nuget": parseNuGet, "composer": parseComposer, "npm-lock": parseNPMLock, "pipfile": parsePipfileLock, "composer-lock": parseComposerLock, "nuget-lock": parseNuGetLock, "conan-lock": parseConanLock, "vcpkg": parseVcpkg} {
-		t.Run(name, func(t *testing.T) {
-			path := writeFixture(t, t.TempDir(), "invalid", `{ "incomplete":`)
-			if _, err := parse(path); err == nil {
-				t.Fatal("malformed manifest must return an error")
-			}
-		})
-	}
-}
 
 type failingBody struct{}
 

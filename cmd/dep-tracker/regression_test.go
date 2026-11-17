@@ -515,8 +515,5 @@ func TestInstalledEnvironmentDoesNotAddAssumedImportVersions(t *testing.T) {
 // in internal/intel checks the real behaviour with a fake clock.
 func init() {
 	disableIntelRateLimit()
-	// Unit tests never reach Maven Central; tests that need a repository
-	// mock httpClient. Port 1 refuses connections immediately.
-	mavenRepositoryURL = "http://127.0.0.1:1/maven2"
-	mavenSleep = func(time.Duration) {}
+	disableMavenSleep()
 }

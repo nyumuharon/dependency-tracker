@@ -12,7 +12,3 @@ func cacheFile(name string) string {
 	defer func() { cache.PlatformCacheDir = old }()
 	return cache.File(name)
 }
-
-func writeCacheFile(path string, data []byte) {
-	cache.WriteFile(path, data)
-}

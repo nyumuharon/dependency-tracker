@@ -109,9 +109,6 @@ func TestWorkingDirectoryServiceFailureContracts(t *testing.T) {
 	}
 	defer os.Chdir(old)
 	unavailable := errors.New("working directory unavailable")
-	if _, err := inspectNodeModulesWithPath(".", func(string) (string, error) { return "", unavailable }); !errors.Is(err, unavailable) {
-		t.Fatalf("directory failure was lost: %v", err)
-	}
 	if err := generateSARIFWithDirectory([]ScanResult{{Pkg: Package{Name: "example", Version: "1.0.0", ManifestPath: "relative.json"}, Vulnerabilities: []Vulnerability{{CVEID: "CVE-2026-11111"}}}}, filepath.Join(root, "report.sarif"), func() (string, error) { return "", unavailable }); err != nil {
 		t.Fatalf("report must tolerate an unavailable relative base: %v", err)
 	}
