@@ -88,6 +88,16 @@ func (v Vulnerability) CVSSDisplay() string {
 	return "unknown"
 }
 
+func NormalizeSeverityLabel(label string) string {
+	switch l := strings.ToUpper(strings.TrimSpace(label)); l {
+	case "LOW", "MEDIUM", "HIGH", "CRITICAL":
+		return l
+	case "MODERATE":
+		return "MEDIUM"
+	}
+	return ""
+}
+
 func SeverityLabelScore(label string) float64 {
 	switch label {
 	case "LOW":

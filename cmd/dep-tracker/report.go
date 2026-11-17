@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/nyumuharon/dependency-tracker/internal/model"
 	"github.com/nyumuharon/dependency-tracker/internal/report"
 )
 
@@ -30,14 +29,6 @@ func Score(cvss, epss float64, hasCVE, isKEV bool) string {
 
 func ScoreVulnerabilities(vulns []Vulnerability) string {
 	return report.ScoreVulnerabilities(vulns)
-}
-
-func normalizeSeverityLabel(label string) string {
-	return report.NormalizeSeverityLabel(label)
-}
-
-func severityLabelScore(label string) float64 {
-	return model.SeverityLabelScore(label)
 }
 
 func buildPURL(pkg Package) string {

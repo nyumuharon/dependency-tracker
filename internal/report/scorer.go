@@ -1,8 +1,6 @@
 package report
 
 import (
-	"strings"
-
 	"github.com/nyumuharon/dependency-tracker/internal/model"
 )
 
@@ -30,29 +28,13 @@ func Score(cvss float64, epss float64, hasCVE bool, isKEV bool) string {
 // NormalizeSeverityLabel maps the qualitative rating of an advisory database
 // to LOW, MEDIUM, HIGH or CRITICAL. Unrecognised ratings yield "".
 func NormalizeSeverityLabel(label string) string {
-	switch l := strings.ToUpper(strings.TrimSpace(label)); l {
-	case "LOW", "MEDIUM", "HIGH", "CRITICAL":
-		return l
-	case "MODERATE":
-		return "MEDIUM"
-	}
-	return ""
+	return model.NormalizeSeverityLabel(label)
 }
 
 // SeverityLabelScore returns the lowest CVSS score in the band of a
 // qualitative rating, or 0 when there is no usable rating.
 func SeverityLabelScore(label string) float64 {
-	switch label {
-	case "LOW":
-		return 0.1
-	case "MEDIUM":
-		return 4.0
-	case "HIGH":
-		return 7.0
-	case "CRITICAL":
-		return 9.0
-	}
-	return 0
+	return model.SeverityLabelScore(label)
 }
 
 // ScoreVulnerabilities applies both exploitability thresholds to the same advisory.

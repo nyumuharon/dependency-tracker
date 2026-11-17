@@ -1,4 +1,4 @@
-package main
+package intel
 
 import (
 	"bytes"
@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nyumuharon/dependency-tracker/internal/report"
 )
 
 func TestRegistryMaintenanceResponsesAndFailures(t *testing.T) {
@@ -127,7 +129,7 @@ func TestReportsExposeUnknownEPSSAndKnownZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := os.Stdout
-	func() { defer func() { os.Stdout = old }(); os.Stdout = file; PrintReport(results) }()
+	func() { defer func() { os.Stdout = old }(); os.Stdout = file; report.PrintReport(results) }()
 	file.Close()
 	data, _ := os.ReadFile(file.Name())
 	for _, want := range []string{"EPSS: unknown", "EPSS: 0.00000", "INCOMPLETE", "FIXED RELEASES", "STALE PACKAGES"} {
@@ -135,9 +137,9 @@ func TestReportsExposeUnknownEPSSAndKnownZero(t *testing.T) {
 			t.Errorf("terminal missing %q", want)
 		}
 	}
-	for _, generate := range []func([]ScanResult, string) error{GenerateSBOM, GenerateSARIF} {
+	for _, generate := range []func([]ScanResult, string, string) error{report.GenerateSBOM, report.GenerateSARIF} {
 		path := filepath.Join(root, "report.json")
-		if err := generate(results, path); err != nil {
+		if err := generate(results, path, "1.1.1"); err != nil {
 			t.Fatal(err)
 		}
 		data, _ := os.ReadFile(path)

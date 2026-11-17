@@ -82,6 +82,10 @@ func TestVulnerabilityMethods(t *testing.T) {
 		t.Fatalf("unscored display: got %s", unscored.CVSSDisplay())
 	}
 
+	if NormalizeSeverityLabel("moderate") != "MEDIUM" || NormalizeSeverityLabel("HIGH") != "HIGH" || NormalizeSeverityLabel("x") != "" {
+		t.Fatal("unexpected NormalizeSeverityLabel")
+	}
+
 	// ScanResult / StalenessResult sanity
 	res := ScanResult{
 		ScanStatus: "complete",

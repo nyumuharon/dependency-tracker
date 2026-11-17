@@ -1,4 +1,4 @@
-package main
+package intel
 
 import (
 	"encoding/json"
@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nyumuharon/dependency-tracker/internal/report"
 )
 
 func TestAdvisoryMetadataMergeAndRangeBoundaries(t *testing.T) {
@@ -143,7 +145,7 @@ func TestUnscoredAdvisoriesUseDatabaseRatingOrStayUnknown(t *testing.T) {
 		{"unscored but in KEV", []Vulnerability{{CVEID: "CVE-2026-1", IsKEV: true}}, "CRITICAL-EXPLOITABLE"},
 	}
 	for _, tc := range cases {
-		if got := ScoreVulnerabilities(tc.vulns); got != tc.want {
+		if got := report.ScoreVulnerabilities(tc.vulns); got != tc.want {
 			t.Errorf("%s: tier %s, want %s", tc.name, got, tc.want)
 		}
 	}

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nyumuharon/dependency-tracker/internal/intel"
 )
 
 // Maven resolves a dependency's version through the project's parent POMs and
@@ -144,7 +146,7 @@ func getMavenPOM(url, key string) ([]byte, error) {
 		return nil, fmt.Errorf("maven repository is rate-limiting this client; skipped %s", key)
 	}
 	for attempt := 1; ; attempt++ {
-		resp, err := httpClient.Get(url)
+		resp, err := intel.HTTPClient().Get(url)
 		if err != nil {
 			return nil, err
 		}
