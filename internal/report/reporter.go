@@ -1,21 +1,15 @@
-package main
+package report
 
 import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/nyumuharon/dependency-tracker/internal/model"
+	"github.com/nyumuharon/dependency-tracker/internal/version"
 )
 
-type ScanResult struct {
-	ScanStatus      string
-	CheckErrors     []string `json:",omitempty"`
-	Pkg             Package
-	Vulnerabilities []Vulnerability
-	PriorityTier    string
-	Staleness       StalenessResult
-}
-
-func tierRank(tier string) int {
+func TierRank(tier string) int {
 	switch tier {
 	case "CRITICAL-EXPLOITABLE":
 		return 1
@@ -32,15 +26,15 @@ func tierRank(tier string) int {
 	}
 }
 
-func PrintReport(results []ScanResult) {
+func PrintReport(results []model.ScanResult) {
 	sep := strings.Repeat("=", 72)
 	thinSep := strings.Repeat("-", 72)
 
 	// Sort a copy, so the caller's order (used for the SBOM and SARIF) is kept:
 	// highest priority first (CRITICAL -> HIGH -> MEDIUM -> LOW -> NONE), then alphabetically
-	results = append([]ScanResult(nil), results...)
+	results = append([]model.ScanResult(nil), results...)
 	sort.SliceStable(results, func(i, j int) bool {
-		ri, rj := tierRank(results[i].PriorityTier), tierRank(results[j].PriorityTier)
+		ri, rj := TierRank(results[i].PriorityTier), TierRank(results[j].PriorityTier)
 		if ri != rj {
 			return ri < rj
 		}
@@ -58,8 +52,8 @@ func PrintReport(results []ScanResult) {
 	kevCount := 0
 	fixCount := 0
 
-	var vulnResults []ScanResult
-	var staleOnlyClean []ScanResult
+	var vulnResults []model.ScanResult
+	var staleOnlyClean []model.ScanResult
 	var cleanCount int
 	var incompleteCount int
 
@@ -115,7 +109,7 @@ func PrintReport(results []ScanResult) {
 			if len(fixes) > 0 {
 				eco := r.Pkg.Ecosystem
 				sort.SliceStable(fixes, func(i, j int) bool {
-					if c, ok := compareVersions(fixes[i], fixes[j], eco); ok {
+					if c, ok := version.CompareVersions(fixes[i], fixes[j], eco); ok {
 						return c < 0
 					}
 					return fixes[i] < fixes[j]
@@ -177,7 +171,7 @@ func PrintReport(results []ScanResult) {
 						kevTag = " | ⚠️ CISA-KEV EXPLOITED"
 					}
 				}
-				fmt.Printf("      • %s [CVSS: %s | EPSS: %s%s]\n", idDisplay, v.cvssDisplay(), v.epssDisplay(), kevTag)
+				fmt.Printf("      • %s [CVSS: %s | EPSS: %s%s]\n", idDisplay, v.CVSSDisplay(), v.EPSSDisplay(), kevTag)
 				if v.Summary != "" {
 					fmt.Printf("        Summary : %s\n", v.Summary)
 				}

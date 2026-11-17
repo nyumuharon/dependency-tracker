@@ -13,14 +13,6 @@ import (
 	"time"
 )
 
-type StalenessResult struct {
-	CheckError    string    `json:"check_error,omitempty"`
-	LatestVersion string    `json:"latest_version"`
-	LastUpdated   time.Time `json:"last_updated"`
-	IsStale       bool      `json:"is_stale"`
-	CachedAt      time.Time `json:"cached_at"`
-}
-
 const stalenessCacheTTL = 12 * time.Hour
 
 var (

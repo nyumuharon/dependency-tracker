@@ -8,26 +8,14 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/nyumuharon/dependency-tracker/internal/model"
 )
 
-type Package struct {
-	Name          string
-	Version       string
-	Ecosystem     string
-	ManifestPath  string
-	ProjectPath   string
-	VersionSource string
-}
-
-// Key returns a unique identifier for a specific package name, version, and ecosystem.
-func (p Package) Key() string {
-	return p.Name + "@" + p.Version + "@" + p.Ecosystem + "@" + p.ProjectPath
-}
-
-// StalenessKey returns a unique identifier for a package name and ecosystem on an upstream registry.
-func (p Package) StalenessKey() string {
-	return p.Name + "@" + p.Ecosystem
-}
+type Package = model.Package
+type Vulnerability = model.Vulnerability
+type ScanResult = model.ScanResult
+type StalenessResult = model.StalenessResult
 
 const (
 	maxOSVConcurrency       = 24
@@ -449,7 +437,7 @@ func run(args []string) int {
 			}
 			// A failed NVD lookup matters only when no other source rated the
 			// advisory.
-			if v.severityScore() == 0 {
+			if v.SeverityScore() == 0 {
 				if msg := nvdErrors[v.CVEID]; msg != "" {
 					checkErrors = append(checkErrors, "Severity unavailable for "+v.CVEID+": "+msg)
 				} else {

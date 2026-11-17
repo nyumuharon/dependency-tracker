@@ -25,7 +25,7 @@ func TestPackageKeys(t *testing.T) {
 func TestVulnerabilityMethods(t *testing.T) {
 	// EPSS known
 	known := Vulnerability{CVEID: "CVE-2026-1", EPSS: 0.12345, EPSSKnown: true}
-	if known.EPSSDisplay() != "0.12345" || known.epssDisplay() != "0.12345" {
+	if known.EPSSDisplay() != "0.12345" {
 		t.Fatalf("unexpected EPSSDisplay: %s", known.EPSSDisplay())
 	}
 	// MarshalJSON with known EPSS
@@ -53,10 +53,10 @@ func TestVulnerabilityMethods(t *testing.T) {
 
 	// CVSS known
 	withCVSS := Vulnerability{CVSS: 7.5}
-	if withCVSS.SeverityScore() != 7.5 || withCVSS.severityScore() != 7.5 {
+	if withCVSS.SeverityScore() != 7.5 {
 		t.Fatalf("unexpected SeverityScore: %f", withCVSS.SeverityScore())
 	}
-	if withCVSS.CVSSDisplay() != "7.5" || withCVSS.cvssDisplay() != "7.5" {
+	if withCVSS.CVSSDisplay() != "7.5" {
 		t.Fatalf("unexpected CVSSDisplay: %s", withCVSS.CVSSDisplay())
 	}
 

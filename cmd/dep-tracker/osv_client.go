@@ -28,43 +28,6 @@ var httpClient = &http.Client{
 	},
 }
 
-type Vulnerability struct {
-	CVEID         string
-	Summary       string
-	CVSS          float64
-	Severity      string // advisory database rating (LOW to CRITICAL); ranks an advisory only when CVSS is unknown
-	ID            string
-	EPSS          float64
-	EPSSKnown     bool
-	FixedVersion  string
-	IsKEV         bool
-	KEVRansomware bool
-}
-
-// MarshalJSON uses null for unknown EPSS scores. EPSSKnown distinguishes a
-// confirmed zero probability from missing data in Go and in exported reports.
-func (v Vulnerability) MarshalJSON() ([]byte, error) {
-	type plain Vulnerability
-	var score *float64
-	if v.EPSSKnown {
-		score = &v.EPSS
-	}
-	return json.Marshal(struct {
-		plain
-		EPSS *float64
-	}{plain: plain(v), EPSS: score})
-}
-
-func (v Vulnerability) epssDisplay() string {
-	if v.EPSSKnown {
-		return fmt.Sprintf("%.5f", v.EPSS)
-	}
-	if !strings.HasPrefix(v.CVEID, "CVE-") {
-		return "not applicable"
-	}
-	return "unknown"
-}
-
 // osvQuery is what we POST to the OSV API
 type osvQuery struct {
 	Package struct {

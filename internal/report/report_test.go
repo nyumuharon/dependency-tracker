@@ -1,4 +1,4 @@
-package main
+package report
 
 import (
 	"encoding/json"
@@ -8,16 +8,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nyumuharon/dependency-tracker/internal/model"
 )
 
-func captureReport(t *testing.T, results []ScanResult) string {
+func captureReport(t *testing.T, results []model.ScanResult) string {
 	t.Helper()
 	file, err := os.CreateTemp(t.TempDir(), "report")
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := os.Stdout
-	func() { defer func() { os.Stdout = old }(); os.Stdout = file; PrintReport(results) }()
+	func() {
+		defer func() { os.Stdout = old }()
+		os.Stdout = file
+		PrintReport(results)
+	}()
 	file.Close()
 	data, err := os.ReadFile(file.Name())
 	if err != nil {
@@ -25,23 +31,49 @@ func captureReport(t *testing.T, results []ScanResult) string {
 	}
 	return string(data)
 }
+
+func writeFixture(t *testing.T, root, name, content string) string {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestRiskReportEveryTierAndExploitationMarker(t *testing.T) {
+	appVersion := "1.1.1"
 	cases := []struct {
 		name, tier string
-		v          Vulnerability
+		v          model.Vulnerability
 	}{
-		{"ransomware", "CRITICAL-EXPLOITABLE", Vulnerability{CVEID: "CVE-2026-11111", ID: "GHSA-ransom", CVSS: 5, IsKEV: true, KEVRansomware: true, Summary: "Issue", FixedVersion: "2.0.0"}},
-		{"exploited", "CRITICAL-EXPLOITABLE", Vulnerability{CVEID: "CVE-2026-22222", CVSS: 8, IsKEV: true, FixedVersion: "2.0.0"}},
-		{"high", "HIGH", Vulnerability{CVEID: "CVE-2026-33333", CVSS: 8}},
-		{"medium", "MEDIUM", Vulnerability{CVEID: "CVE-2026-44444", CVSS: 5}},
-		{"low", "LOW", Vulnerability{ID: "GHSA-low", CVSS: 3}},
+		{"ransomware", "CRITICAL-EXPLOITABLE", model.Vulnerability{CVEID: "CVE-2026-11111", ID: "GHSA-ransom", CVSS: 5, IsKEV: true, KEVRansomware: true, Summary: "Issue", FixedVersion: "2.0.0"}},
+		{"exploited", "CRITICAL-EXPLOITABLE", model.Vulnerability{CVEID: "CVE-2026-22222", CVSS: 8, IsKEV: true, FixedVersion: "2.0.0"}},
+		{"high", "HIGH", model.Vulnerability{CVEID: "CVE-2026-33333", CVSS: 8}},
+		{"medium", "MEDIUM", model.Vulnerability{CVEID: "CVE-2026-44444", CVSS: 5}},
+		{"low", "LOW", model.Vulnerability{ID: "GHSA-low", CVSS: 3}},
 	}
-	var results []ScanResult
+	var results []model.ScanResult
 	for _, tc := range cases {
-		results = append(results, ScanResult{Pkg: Package{Name: tc.name, Version: "1.0.0", Ecosystem: "npm"}, ScanStatus: "incomplete", PriorityTier: tc.tier, CheckErrors: []string{"EPSS unavailable"}, Vulnerabilities: []Vulnerability{tc.v}, Staleness: StalenessResult{LatestVersion: "3.0.0", LastUpdated: time.Now().Add(-3 * 365 * 24 * time.Hour), IsStale: true}})
+		results = append(results, model.ScanResult{
+			Pkg:             model.Package{Name: tc.name, Version: "1.0.0", Ecosystem: "npm"},
+			ScanStatus:      "incomplete",
+			PriorityTier:    tc.tier,
+			CheckErrors:     []string{"EPSS unavailable"},
+			Vulnerabilities: []model.Vulnerability{tc.v},
+			Staleness:       model.StalenessResult{LatestVersion: "3.0.0", LastUpdated: time.Now().Add(-3 * 365 * 24 * time.Hour), IsStale: true},
+		})
 	}
 	for _, name := range []string{"safe-z", "safe-a"} {
-		results = append(results, ScanResult{Pkg: Package{Name: name, Version: "1.0.0", Ecosystem: "npm"}, ScanStatus: "complete", PriorityTier: "NONE", Staleness: StalenessResult{IsStale: true}})
+		results = append(results, model.ScanResult{
+			Pkg:          model.Package{Name: name, Version: "1.0.0", Ecosystem: "npm"},
+			ScanStatus:   "complete",
+			PriorityTier: "NONE",
+			Staleness:    model.StalenessResult{IsStale: true},
+		})
 	}
 	text := captureReport(t, results)
 	for _, want := range []string{"KNOWN RANSOMWARE", "CISA-KEV EXPLOITED", "[MEDIUM]", "[LOW]", "CRITICAL-EXPLOITABLE", "safe-a", "safe-z"} {
@@ -50,12 +82,8 @@ func TestRiskReportEveryTierAndExploitationMarker(t *testing.T) {
 		}
 	}
 	root := t.TempDir()
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	results[0].Pkg.ManifestPath = filepath.Join(cwd, "cmd", "dep-tracker", "testdata", "package.json")
-	if err := GenerateSARIF(results, filepath.Join(root, "report.sarif")); err != nil {
+	results[0].Pkg.ManifestPath = filepath.Join(root, "package.json")
+	if err := GenerateSARIF(results, filepath.Join(root, "report.sarif"), appVersion); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "report.sarif"))
@@ -73,28 +101,29 @@ func TestRiskReportEveryTierAndExploitationMarker(t *testing.T) {
 		t.Fatal("active exploitation priority not reflected")
 	}
 	blocked := writeFixture(t, root, "blocked", "file")
-	for _, generate := range []func([]ScanResult, string) error{GenerateSBOM, GenerateSARIF} {
-		if err := generate(results, filepath.Join(blocked, "report.json")); err == nil {
+	for _, generate := range []func([]model.ScanResult, string, string) error{GenerateSBOM, GenerateSARIF} {
+		if err := generate(results, filepath.Join(blocked, "report.json"), appVersion); err == nil {
 			t.Fatal("failed export reported success")
 		}
 	}
 	for _, tier := range []string{"CRITICAL-EXPLOITABLE", "HIGH", "MEDIUM", "LOW", "UNKNOWN", "NONE"} {
-		if rank := tierRank(tier); rank < 1 || rank > 6 {
+		if rank := TierRank(tier); rank < 1 || rank > 6 {
 			t.Fatal(rank)
 		}
 	}
 	if text := captureReport(t, nil); !strings.Contains(text, "No vulnerabilities found") {
 		t.Fatal(text)
 	}
-	unknown := []ScanResult{{Pkg: Package{Name: "unknown"}, ScanStatus: "incomplete", PriorityTier: "UNKNOWN", CheckErrors: []string{"missing data"}}}
+	unknown := []model.ScanResult{{Pkg: model.Package{Name: "unknown"}, ScanStatus: "incomplete", PriorityTier: "UNKNOWN", CheckErrors: []string{"missing data"}}}
 	if text := captureReport(t, unknown); !strings.Contains(text, "Scan incomplete:") {
 		t.Fatal(text)
 	}
 }
 
-func TestPURLTypesAndCLIEqualsOptions(t *testing.T) {
+func TestPURLTypes(t *testing.T) {
 	for _, tc := range []struct{ eco, name, version, want string }{
 		{"PyPI", "requests", "1.0.0", "pkg:pypi/requests@1.0.0"},
+		{"Maven", "org.apache:log4j", "2.0.0", "pkg:maven/org.apache/log4j@2.0.0"},
 		{"NuGet", "Library", "1.0.0", "pkg:nuget/Library@1.0.0"},
 		{"Go", "example.com/library", "v1.0.0", "pkg:golang/example.com/library@v1.0.0"},
 		{"crates.io", "serde", "1.0.0", "pkg:cargo/serde@1.0.0"},
@@ -106,32 +135,15 @@ func TestPURLTypesAndCLIEqualsOptions(t *testing.T) {
 		{"SwiftURL", "library", "1.0.0", "pkg:swift/library@1.0.0"},
 		{"Other", "library", "1.0.0", "pkg:generic/library@1.0.0"},
 	} {
-		got := buildPURL(Package{Name: tc.name, Version: tc.version, Ecosystem: tc.eco})
+		got := BuildPURL(model.Package{Name: tc.name, Version: tc.version, Ecosystem: tc.eco})
 		if got != tc.want {
 			t.Errorf("%s: %s", tc.eco, got)
-		}
-	}
-	opts, path, err := parseArgs([]string{"scan", ".", "--sbom", "bom.json", "--sarif=results.sarif"})
-	if err != nil || path != "." || opts.sbomPath != "bom.json" || opts.sarifPath != "results.sarif" {
-		t.Fatalf("%+v %s %v", opts, path, err)
-	}
-	for _, tc := range []struct {
-		a, b, eco string
-		want      int
-		ok        bool
-	}{
-		{"1.0.0-alpha", "1.0.0", "npm", -1, true},
-		{"1.0.0-alpha", "1.0.0-beta", "npm", -1, true},
-		{"1.0.0-alpha", "1.0.0", "PyPI", 0, false},
-	} {
-		got, ok := compareVersions(tc.a, tc.b, tc.eco)
-		if ok != tc.ok || (ok && got != tc.want) {
-			t.Fatalf("%+v: %v %v", tc, got, ok)
 		}
 	}
 }
 
 func TestSARIFRulesLocationsAndFingerprints(t *testing.T) {
+	appVersion := "1.1.1"
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -140,16 +152,16 @@ func TestSARIFRulesLocationsAndFingerprints(t *testing.T) {
 	outside := writeFixture(t, t.TempDir(), "pom.xml", "<project/>")
 	cwdOnly := t.TempDir()
 	belowCwd := writeFixture(t, cwdOnly, "sub/go.mod", "module x\n")
-	shared := Vulnerability{CVEID: "CVE-2026-1", Summary: "shared issue", CVSS: 7.5, EPSSKnown: true}
-	results := []ScanResult{
-		{Pkg: Package{Name: "a", Version: "1.0.0", Ecosystem: "npm", ManifestPath: inRepo}, ScanStatus: "complete", Vulnerabilities: []Vulnerability{shared}},
-		{Pkg: Package{Name: "b", Version: "2.0.0", Ecosystem: "npm", ManifestPath: inRepo}, ScanStatus: "complete", Vulnerabilities: []Vulnerability{shared}},
-		{Pkg: Package{Name: "c", Version: "1.0.0", Ecosystem: "Maven", ManifestPath: outside}, ScanStatus: "incomplete", Vulnerabilities: []Vulnerability{{CVEID: "CVE-2026-2"}}},
-		{Pkg: Package{Name: "d", Version: "1.0.0", Ecosystem: "Go", ManifestPath: belowCwd}, ScanStatus: "complete", Vulnerabilities: []Vulnerability{{CVEID: "GHSA-x", Severity: "HIGH"}}},
-		{Pkg: Package{Name: "e", Version: "1.0.0", Ecosystem: "npm"}, ScanStatus: "complete", Vulnerabilities: []Vulnerability{{CVEID: "CVE-2026-3", IsKEV: true}}},
+	shared := model.Vulnerability{CVEID: "CVE-2026-1", Summary: "shared issue", CVSS: 7.5, EPSSKnown: true}
+	results := []model.ScanResult{
+		{Pkg: model.Package{Name: "a", Version: "1.0.0", Ecosystem: "npm", ManifestPath: inRepo}, ScanStatus: "complete", Vulnerabilities: []model.Vulnerability{shared}},
+		{Pkg: model.Package{Name: "b", Version: "2.0.0", Ecosystem: "npm", ManifestPath: inRepo}, ScanStatus: "complete", Vulnerabilities: []model.Vulnerability{shared}},
+		{Pkg: model.Package{Name: "c", Version: "1.0.0", Ecosystem: "Maven", ManifestPath: outside}, ScanStatus: "incomplete", Vulnerabilities: []model.Vulnerability{{CVEID: "CVE-2026-2"}}},
+		{Pkg: model.Package{Name: "d", Version: "1.0.0", Ecosystem: "Go", ManifestPath: belowCwd}, ScanStatus: "complete", Vulnerabilities: []model.Vulnerability{{CVEID: "GHSA-x", Severity: "HIGH"}}},
+		{Pkg: model.Package{Name: "e", Version: "1.0.0", Ecosystem: "npm"}, ScanStatus: "complete", Vulnerabilities: []model.Vulnerability{{CVEID: "CVE-2026-3", IsKEV: true}}},
 	}
 	path := filepath.Join(t.TempDir(), "out.sarif")
-	if err := generateSARIFWithDirectory(results, path, func() (string, error) { return cwdOnly, nil }); err != nil {
+	if err := GenerateSARIFWithDirectory(results, path, appVersion, func() (string, error) { return cwdOnly, nil }); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -198,30 +210,13 @@ func TestSARIFRulesLocationsAndFingerprints(t *testing.T) {
 	}
 }
 
-func TestCacheWritesAreAtomic(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cache.json")
-	writeCacheFile(path, []byte(`{"a":1}`))
-	if data, err := os.ReadFile(path); err != nil || string(data) != `{"a":1}` {
-		t.Fatalf("%s %v", data, err)
-	}
-	// A missing directory and a directory in the way both leave no temp files.
-	writeCacheFile(filepath.Join(dir, "missing", "cache.json"), []byte("x"))
-	blocked := filepath.Join(dir, "blocked")
-	writeFixture(t, blocked, "keep", "x")
-	writeCacheFile(blocked, []byte("x"))
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 2 {
-		t.Fatalf("temporary files left behind: %v", entries)
-	}
-}
-
 func TestSBOMReferencesAndPyPINames(t *testing.T) {
+	appVersion := "1.1.1"
 	path := filepath.Join(t.TempDir(), "sbom.json")
-	pkg := Package{Name: "Django_REST", Version: "3.0.0", Ecosystem: "PyPI", VersionSource: "manifest"}
+	pkg := model.Package{Name: "Django_REST", Version: "3.0.0", Ecosystem: "PyPI", VersionSource: "manifest"}
 	other := pkg
 	other.ProjectPath = "other"
-	if err := GenerateSBOM([]ScanResult{{Pkg: pkg}, {Pkg: other}, {Pkg: Package{Name: "loose", Version: "^1.0", Ecosystem: "npm", VersionSource: "constraint"}}}, path); err != nil {
+	if err := GenerateSBOM([]model.ScanResult{{Pkg: pkg}, {Pkg: other}, {Pkg: model.Package{Name: "loose", Version: "^1.0", Ecosystem: "npm", VersionSource: "constraint"}}}, path, appVersion); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
@@ -237,11 +232,11 @@ func TestSBOMReferencesAndPyPINames(t *testing.T) {
 }
 
 func TestRemediationTableOrdersFixedReleasesByVersion(t *testing.T) {
-	out := captureReport(t, []ScanResult{{
-		Pkg:          Package{Name: "org.apache.logging.log4j:log4j-core", Version: "2.24.0", Ecosystem: "Maven"},
+	out := captureReport(t, []model.ScanResult{{
+		Pkg:          model.Package{Name: "org.apache.logging.log4j:log4j-core", Version: "2.24.0", Ecosystem: "Maven"},
 		ScanStatus:   "complete",
 		PriorityTier: "HIGH",
-		Vulnerabilities: []Vulnerability{
+		Vulnerabilities: []model.Vulnerability{
 			{CVEID: "CVE-1", CVSS: 7, FixedVersion: "2.25.10"},
 			{CVEID: "CVE-2", CVSS: 7, FixedVersion: "2.25.4"},
 			{CVEID: "CVE-3", CVSS: 7, FixedVersion: "3.0.0-beta1"},
@@ -250,5 +245,58 @@ func TestRemediationTableOrdersFixedReleasesByVersion(t *testing.T) {
 	}})
 	if !strings.Contains(out, "2.25.4, 2.25.10, 2.3.0-rc1, 3.0.0-beta1") || !strings.Contains(out, "org.apache.logging.log4j:log4j-core HIGH") {
 		t.Fatalf("fixed releases misordered or table misaligned:\n%s", out)
+	}
+}
+
+func TestScorerEdgeCases(t *testing.T) {
+	if Score(0, 0, false, false) != "NONE" {
+		t.Fatal("expected NONE without CVE")
+	}
+	if Score(8.0, 0.3, true, false) != "CRITICAL-EXPLOITABLE" {
+		t.Fatal("expected CRITICAL-EXPLOITABLE")
+	}
+	if Score(7.5, 0.1, true, false) != "HIGH" {
+		t.Fatal("expected HIGH")
+	}
+	if Score(5.0, 0.1, true, false) != "MEDIUM" {
+		t.Fatal("expected MEDIUM")
+	}
+	if Score(2.0, 0.1, true, false) != "LOW" {
+		t.Fatal("expected LOW")
+	}
+	if Score(0, 0, true, false) != "UNKNOWN" {
+		t.Fatal("expected UNKNOWN for unscored CVE")
+	}
+	for _, l := range []string{"LOW", "MEDIUM", "HIGH", "CRITICAL"} {
+		if NormalizeSeverityLabel(l) != l {
+			t.Fatalf("expected %s", l)
+		}
+	}
+	if NormalizeSeverityLabel("moderate") != "MEDIUM" {
+		t.Fatal("expected MEDIUM for moderate")
+	}
+	if NormalizeSeverityLabel("unknown") != "" {
+		t.Fatal("expected empty for unknown label")
+	}
+	for l, want := range map[string]float64{
+		"LOW": 0.1, "MEDIUM": 4.0, "HIGH": 7.0, "CRITICAL": 9.0, "": 0,
+	} {
+		if SeverityLabelScore(l) != want {
+			t.Fatalf("score for %s: got %f, want %f", l, SeverityLabelScore(l), want)
+		}
+	}
+	// ScoreVulnerabilities with ranking
+	vulns := []model.Vulnerability{
+		{CVEID: "CVE-1", CVSS: 2.0},
+		{CVEID: "CVE-2", CVSS: 8.0, EPSS: 0.5, EPSSKnown: true},
+	}
+	if ScoreVulnerabilities(vulns) != "CRITICAL-EXPLOITABLE" {
+		t.Fatal("expected CRITICAL-EXPLOITABLE from combined vulns")
+	}
+	if ScorePackage(vulns, false) != "CRITICAL-EXPLOITABLE" {
+		t.Fatal("expected CRITICAL-EXPLOITABLE")
+	}
+	if ScorePackage(nil, true) != "UNKNOWN" {
+		t.Fatal("expected UNKNOWN for incomplete scan with no vulns")
 	}
 }

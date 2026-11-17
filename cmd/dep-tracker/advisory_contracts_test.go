@@ -148,7 +148,7 @@ func TestUnscoredAdvisoriesUseDatabaseRatingOrStayUnknown(t *testing.T) {
 		}
 	}
 	for v, want := range map[Vulnerability]string{{CVSS: 7.5, Severity: "LOW"}: "7.5", {Severity: "HIGH"}: "unscored, rated HIGH", {}: "unknown"} {
-		if got := v.cvssDisplay(); got != want {
+		if got := v.CVSSDisplay(); got != want {
 			t.Errorf("%+v displayed as %q, want %q", v, got, want)
 		}
 	}

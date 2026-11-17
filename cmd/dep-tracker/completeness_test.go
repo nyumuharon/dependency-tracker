@@ -47,10 +47,10 @@ func TestEPSSMissingInvalidAndZero(t *testing.T) {
 			if (decoded["EPSS"] != nil) != known {
 				t.Fatalf("missing score serialized as zero: %s", data)
 			}
-			if !known && v.epssDisplay() != "unknown" {
+			if !known && v.EPSSDisplay() != "unknown" {
 				t.Fatal("missing score not labeled unknown")
 			}
-			if known && value == 0 && v.epssDisplay() != "0.00000" {
+			if known && value == 0 && v.EPSSDisplay() != "0.00000" {
 				t.Fatal("confirmed zero not preserved")
 			}
 		})

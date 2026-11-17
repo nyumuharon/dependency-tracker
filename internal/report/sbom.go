@@ -1,4 +1,4 @@
-package main
+package report
 
 import (
 	"crypto/rand"
@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/nyumuharon/dependency-tracker/internal/model"
+	"github.com/nyumuharon/dependency-tracker/internal/version"
 )
 
 type CycloneDXSBOM struct {
@@ -42,7 +45,7 @@ type SBOMProperty struct {
 	Value string `json:"value"`
 }
 
-func GenerateSBOM(results []ScanResult, outputPath string) error {
+func GenerateSBOM(results []model.ScanResult, outputPath string, appVersion string) error {
 	sbom := CycloneDXSBOM{
 		BOMFormat:    "CycloneDX",
 		SpecVersion:  "1.4",
@@ -64,7 +67,7 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 			Type:    "library",
 			Name:    r.Pkg.Name,
 			Version: r.Pkg.Version,
-			PURL:    buildPURL(r.Pkg),
+			PURL:    BuildPURL(r.Pkg),
 		}
 		// bom-ref must be unique; the same package can appear in several
 		// projects of one scan.
@@ -78,49 +81,52 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 		}
 		comp.BOMRef = ref
 
-		if validateQueryVersion(r.Pkg) != nil {
+		if version.ValidateQueryVersion(r.Pkg) != nil {
 			comp.Version = ""
-			comp.Properties = append(comp.Properties, SBOMProperty{Name: "version:declared", Value: r.Pkg.Version})
 		}
 
 		comp.Properties = append(comp.Properties, SBOMProperty{
 			Name:  "risk:priorityTier",
 			Value: r.PriorityTier,
 		})
-
-		staleStatus := "UNKNOWN"
-		if !r.Staleness.LastUpdated.IsZero() && r.Staleness.CheckError == "" {
-			staleStatus = "ACTIVE"
-		}
-		if r.Staleness.IsStale {
-			staleStatus = "STALE"
-		}
 		comp.Properties = append(comp.Properties, SBOMProperty{
-			Name:  "risk:staleness",
-			Value: staleStatus,
+			Name:  "risk:scanStatus",
+			Value: r.ScanStatus,
 		})
-
-		if r.Staleness.LatestVersion != "" {
+		if r.Pkg.VersionSource != "" {
 			comp.Properties = append(comp.Properties, SBOMProperty{
-				Name:  "risk:latestVersion",
-				Value: r.Staleness.LatestVersion,
+				Name:  "risk:versionSource",
+				Value: r.Pkg.VersionSource,
 			})
 		}
-
-		comp.Properties = append(comp.Properties, SBOMProperty{Name: "scan:status", Value: r.ScanStatus}, SBOMProperty{Name: "version:source", Value: r.Pkg.VersionSource})
-		for _, msg := range r.CheckErrors {
-			comp.Properties = append(comp.Properties, SBOMProperty{Name: "scan:error", Value: msg})
+		if r.Pkg.ProjectPath != "" {
+			comp.Properties = append(comp.Properties, SBOMProperty{
+				Name:  "risk:projectPath",
+				Value: r.Pkg.ProjectPath,
+			})
+		}
+		if r.Pkg.ManifestPath != "" {
+			comp.Properties = append(comp.Properties, SBOMProperty{
+				Name:  "risk:manifestPath",
+				Value: r.Pkg.ManifestPath,
+			})
+		}
+		for _, errStr := range r.CheckErrors {
+			comp.Properties = append(comp.Properties, SBOMProperty{
+				Name:  "risk:checkError",
+				Value: errStr,
+			})
 		}
 
 		for _, v := range r.Vulnerabilities {
 			comp.Properties = append(comp.Properties, SBOMProperty{
 				Name:  "vuln:cveID",
-				Value: fmt.Sprintf("%s (CVSS:%s EPSS:%s)", v.CVEID, v.cvssDisplay(), v.epssDisplay()),
+				Value: fmt.Sprintf("%s (CVSS:%s EPSS:%s)", v.CVEID, v.CVSSDisplay(), v.EPSSDisplay()),
 			})
 			if v.FixedVersion != "" {
 				comp.Properties = append(comp.Properties, SBOMProperty{
 					Name:  "vuln:fixedVersion",
-					Value: fmt.Sprintf("%s: fixed release %s (verify branch compatibility)", v.CVEID, v.FixedVersion),
+					Value: v.FixedVersion,
 				})
 			}
 			if v.IsKEV {
@@ -131,15 +137,28 @@ func GenerateSBOM(results []ScanResult, outputPath string) error {
 			}
 		}
 
+		if r.Staleness.IsStale {
+			comp.Properties = append(comp.Properties, SBOMProperty{
+				Name:  "lifecycle:isStale",
+				Value: "true",
+			})
+			if !r.Staleness.LastUpdated.IsZero() {
+				comp.Properties = append(comp.Properties, SBOMProperty{
+					Name:  "lifecycle:lastUpdated",
+					Value: r.Staleness.LastUpdated.Format(time.RFC3339),
+				})
+			}
+		}
+
 		sbom.Components = append(sbom.Components, comp)
 	}
 
-	// All report fields are fixed JSON-supported types; I/O failures are returned below.
 	data, _ := json.MarshalIndent(sbom, "", "  ")
 
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		return err
+	if dir := filepath.Dir(outputPath); dir != "." && dir != "" {
+		_ = os.MkdirAll(dir, 0755)
 	}
+
 	return os.WriteFile(outputPath, data, 0644)
 }
 
@@ -152,11 +171,11 @@ func newSerialNumber() string {
 	return fmt.Sprintf("urn:uuid:%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-func buildPURL(pkg Package) string {
-	if validateQueryVersion(pkg) != nil {
+func BuildPURL(pkg model.Package) string {
+	if version.ValidateQueryVersion(pkg) != nil {
 		return ""
 	}
-	name, version := pkg.Name, url.PathEscape(pkg.Version)
+	name, ver := pkg.Name, url.PathEscape(pkg.Version)
 	// Escape each namespace/name segment while retaining its separators.
 	segments := strings.Split(name, "/")
 	for i := range segments {
@@ -167,33 +186,34 @@ func buildPURL(pkg Package) string {
 	if pkg.Ecosystem == "Maven" {
 		name = strings.Replace(name, ":", "/", 1)
 	}
+
 	switch pkg.Ecosystem {
 	case "npm":
-		return fmt.Sprintf("pkg:npm/%s@%s", name, version)
+		return fmt.Sprintf("pkg:npm/%s@%s", name, ver)
 	case "PyPI":
 		// The PURL spec requires lowercase PyPI names with "_" as "-".
-		return fmt.Sprintf("pkg:pypi/%s@%s", strings.ReplaceAll(strings.ToLower(name), "_", "-"), version)
+		return fmt.Sprintf("pkg:pypi/%s@%s", strings.ReplaceAll(strings.ToLower(name), "_", "-"), ver)
 	case "Maven":
-		return fmt.Sprintf("pkg:maven/%s@%s", name, version)
+		return fmt.Sprintf("pkg:maven/%s@%s", name, ver)
 	case "NuGet":
-		return fmt.Sprintf("pkg:nuget/%s@%s", name, version)
+		return fmt.Sprintf("pkg:nuget/%s@%s", name, ver)
 	case "Go":
-		return fmt.Sprintf("pkg:golang/%s@%s", name, version)
+		return fmt.Sprintf("pkg:golang/%s@%s", name, ver)
 	case "crates.io":
-		return fmt.Sprintf("pkg:cargo/%s@%s", name, version)
+		return fmt.Sprintf("pkg:cargo/%s@%s", name, ver)
 	case "Packagist":
-		return fmt.Sprintf("pkg:composer/%s@%s", name, version)
+		return fmt.Sprintf("pkg:composer/%s@%s", name, ver)
 	case "RubyGems":
-		return fmt.Sprintf("pkg:gem/%s@%s", name, version)
+		return fmt.Sprintf("pkg:gem/%s@%s", name, ver)
 	case "ConanCenter":
-		return fmt.Sprintf("pkg:conan/%s@%s", name, version)
+		return fmt.Sprintf("pkg:conan/%s@%s", name, ver)
 	case "Pub":
-		return fmt.Sprintf("pkg:pub/%s@%s", name, version)
+		return fmt.Sprintf("pkg:pub/%s@%s", name, ver)
 	case "Hex":
-		return fmt.Sprintf("pkg:hex/%s@%s", name, version)
+		return fmt.Sprintf("pkg:hex/%s@%s", name, ver)
 	case "SwiftURL":
-		return fmt.Sprintf("pkg:swift/%s@%s", name, version)
+		return fmt.Sprintf("pkg:swift/%s@%s", name, ver)
 	default:
-		return fmt.Sprintf("pkg:generic/%s@%s", name, version)
+		return fmt.Sprintf("pkg:generic/%s@%s", name, ver)
 	}
 }

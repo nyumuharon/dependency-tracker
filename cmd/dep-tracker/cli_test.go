@@ -64,6 +64,13 @@ func TestCLICommandsAndProcessExit(t *testing.T) {
 	}
 }
 
+func TestCLIEqualsOptions(t *testing.T) {
+	opts, path, err := parseArgs([]string{"scan", ".", "--sbom", "bom.json", "--sarif=results.sarif"})
+	if err != nil || path != "." || opts.sbomPath != "bom.json" || opts.sarifPath != "results.sarif" {
+		t.Fatalf("%+v %s %v", opts, path, err)
+	}
+}
+
 func TestUpdaterDelegationWrappers(t *testing.T) {
 	opts := defaultUpdater()
 	opts.ApiURL = "http://127.0.0.1:0/invalid"

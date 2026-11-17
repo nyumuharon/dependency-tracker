@@ -1,4 +1,4 @@
-package main
+package report
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nyumuharon/dependency-tracker/internal/model"
 )
 
 type SARIFReport struct {
@@ -51,22 +53,23 @@ type SARIFRule struct {
 	Properties           map[string]interface{} `json:"properties,omitempty"`
 }
 
-type SARIFHelp struct {
-	Text     string `json:"text"`
-	Markdown string `json:"markdown"`
-}
-
 type SARIFConfiguration struct {
 	Level string `json:"level"`
 }
 
+type SARIFHelp struct {
+	Text     string `json:"text"`
+	Markdown string `json:"markdown,omitempty"`
+}
+
 type SARIFResult struct {
-	RuleID              string            `json:"ruleId"`
-	RuleIndex           int               `json:"ruleIndex"`
-	Level               string            `json:"level"`
-	Message             SARIFMessage      `json:"message"`
-	Locations           []SARIFLocation   `json:"locations,omitempty"`
-	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
+	RuleID              string                 `json:"ruleId"`
+	RuleIndex           int                    `json:"ruleIndex"`
+	Level               string                 `json:"level"`
+	Message             SARIFMessage           `json:"message"`
+	Locations           []SARIFLocation        `json:"locations"`
+	Properties          map[string]interface{} `json:"properties,omitempty"`
+	PartialFingerprints map[string]string      `json:"partialFingerprints,omitempty"`
 }
 
 type SARIFLocation struct {
@@ -92,11 +95,11 @@ type SARIFMessage struct {
 }
 
 // GenerateSARIF creates a standard SARIF v2.1.0 document from scan results.
-func GenerateSARIF(results []ScanResult, outputPath string) error {
-	return generateSARIFWithDirectory(results, outputPath, os.Getwd)
+func GenerateSARIF(results []model.ScanResult, outputPath string, appVersion string) error {
+	return GenerateSARIFWithDirectory(results, outputPath, appVersion, os.Getwd)
 }
 
-func generateSARIFWithDirectory(results []ScanResult, outputPath string, workingDirectory func() (string, error)) error {
+func GenerateSARIFWithDirectory(results []model.ScanResult, outputPath string, appVersion string, workingDirectory func() (string, error)) error {
 	report := SARIFReport{
 		Schema:  "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
 		Version: "2.1.0",
@@ -143,7 +146,7 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 				// version belong to each result, since several packages can
 				// share one rule.
 				level := "warning"
-				severity := v.severityScore()
+				severity := v.SeverityScore()
 				properties := map[string]interface{}{
 					"tags":      []string{"security", "dependency"},
 					"precision": "very-high",
@@ -166,12 +169,12 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 					properties["tags"] = []string{"security", "dependency", "cisa-kev"}
 				}
 
-				helpText := fmt.Sprintf("Vulnerability: %s\nCVSS: %s | EPSS: %s\n", ruleID, v.cvssDisplay(), v.epssDisplay())
+				helpText := fmt.Sprintf("Vulnerability: %s\nCVSS: %s | EPSS: %s\n", ruleID, v.CVSSDisplay(), v.EPSSDisplay())
 				helpMarkdown := fmt.Sprintf("### Vulnerability Details\n\n"+
 					"- **Vulnerability ID**: `%s`\n"+
 					"- **CVSS Base Score**: `%s`\n"+
 					"- **EPSS Exploit Probability**: `%s`\n",
-					ruleID, v.cvssDisplay(), v.epssDisplay())
+					ruleID, v.CVSSDisplay(), v.EPSSDisplay())
 				if v.IsKEV {
 					helpText += "Warning: Listed in CISA Known Exploited Vulnerabilities (KEV) catalog!\n"
 					helpMarkdown += "\n**CISA KEV ALERT**: This vulnerability is actively exploited in the wild.\n"
@@ -206,14 +209,14 @@ func generateSARIFWithDirectory(results []ScanResult, outputPath string, working
 
 			// Determine result level
 			resLevel := "warning"
-			if severity := v.severityScore(); v.IsKEV || severity >= 7.0 {
+			if severity := v.SeverityScore(); v.IsKEV || severity >= 7.0 {
 				resLevel = "error"
 			} else if severity < 4.0 && severity > 0 {
 				resLevel = "note"
 			}
 
 			messageText := fmt.Sprintf("Dependency %s@%s contains %s (CVSS %s, EPSS %s).",
-				r.Pkg.Name, r.Pkg.Version, ruleID, v.cvssDisplay(), v.epssDisplay())
+				r.Pkg.Name, r.Pkg.Version, ruleID, v.CVSSDisplay(), v.EPSSDisplay())
 			if v.FixedVersion != "" {
 				messageText += fmt.Sprintf(" Fixed release: %s (verify branch compatibility).", v.FixedVersion)
 			}

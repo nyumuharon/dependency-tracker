@@ -71,19 +71,11 @@ func (v Vulnerability) EPSSDisplay() string {
 	return "not applicable (non-CVE advisory)"
 }
 
-func (v Vulnerability) epssDisplay() string {
-	return v.EPSSDisplay()
-}
-
 func (v Vulnerability) SeverityScore() float64 {
 	if v.CVSS > 0 {
 		return v.CVSS
 	}
 	return SeverityLabelScore(v.Severity)
-}
-
-func (v Vulnerability) severityScore() float64 {
-	return v.SeverityScore()
 }
 
 func (v Vulnerability) CVSSDisplay() string {
@@ -94,10 +86,6 @@ func (v Vulnerability) CVSSDisplay() string {
 		return "unscored, rated " + v.Severity
 	}
 	return "unknown"
-}
-
-func (v Vulnerability) cvssDisplay() string {
-	return v.CVSSDisplay()
 }
 
 func SeverityLabelScore(label string) float64 {

@@ -96,7 +96,7 @@ func TestVersionOrderingBoundaryForms(t *testing.T) {
 	if normalizeExactPin(" =1.0.0 ", "npm") != "1.0.0" {
 		t.Fatal("equality pin")
 	}
-	if v := (Vulnerability{CVEID: "GHSA-example"}).epssDisplay(); !strings.Contains(v, "not applicable") {
+	if v := (Vulnerability{CVEID: "GHSA-example"}).EPSSDisplay(); !strings.Contains(v, "not applicable") {
 		t.Fatal(v)
 	}
 }
