@@ -60,7 +60,7 @@ SCAN OPTIONS
   --json           Print the full risk report as JSON on stdout instead of
                    the text report (progress messages go to stderr).
   --stale-only     Only show packages with no upstream release in over two
-                   years (730 days), plus incomplete results that need attention.
+                   years (730 days), plus incomplete staleness checks.
                    The SBOM/SARIF still cover everything.
   -h, --help       Show this help.
   -v, --version    Print the version number.
@@ -472,7 +472,7 @@ func run(args []string) int {
 	if opts.staleOnly {
 		shown = []ScanResult{}
 		for _, r := range results {
-			if r.Staleness.IsStale || r.ScanStatus == "incomplete" {
+			if r.Staleness.IsStale || r.Staleness.CheckError != "" {
 				shown = append(shown, r)
 			}
 		}

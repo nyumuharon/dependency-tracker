@@ -275,7 +275,7 @@ func TestExportsIncludeActualVersionAndIncompleteStatus(t *testing.T) {
 }
 
 func TestScanExitCodesAndJSON(t *testing.T) {
-	for _, mode := range []string{"clean", "osv-down", "unresolved", "critical", "export-failure", "epss-down", "kev-down", "nvd-down", "staleness-down", "epss-missing", "epss-invalid", "epss-zero", "discovery-error", "kev-active", "kev-ransomware", "nvd-score", "nvd-empty", "text-report", "sarif-failure", "json-output-failure", "stale-only", "stale-only-text", "stale-filtered-clean", "empty-project", "discovery-empty", "batch-fallback", "multiple-versions"} {
+	for _, mode := range []string{"clean", "osv-down", "unresolved", "critical", "export-failure", "epss-down", "kev-down", "nvd-down", "staleness-down", "epss-missing", "epss-invalid", "epss-zero", "discovery-error", "kev-active", "kev-ransomware", "nvd-score", "nvd-empty", "text-report", "sarif-failure", "json-output-failure", "stale-only", "stale-only-text", "stale-filtered-clean", "stale-only-skips-incomplete", "empty-project", "discovery-empty", "batch-fallback", "multiple-versions"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			t.Setenv("DEP_TRACKER_CACHE_DIR", filepath.Join(root, "cache"))
@@ -296,6 +296,9 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			if mode == "multiple-versions" {
 				manifest = writeFixture(t, root, "package-lock.json", `{"lockfileVersion":3,"packages":{"node_modules/example":{"version":"1.0.0"},"node_modules/a/node_modules/example":{"version":"2.0.0"}}}`)
 			}
+			if mode == "stale-only-skips-incomplete" {
+				manifest = writeFixture(t, root, "package-lock.json", `{"lockfileVersion":3,"packages":{"node_modules/stale-pkg":{"version":"1.0.0"},"node_modules/active-incomplete":{"version":"1.0.0"},"node_modules/missing-upstream":{"version":"1.0.0"}}}`)
+			}
 			if mode == "discovery-error" {
 				writeFixture(t, root, "node_modules/broken/package.json", "{bad")
 				manifest = root
@@ -303,10 +306,10 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			mockHTTP(t, func(r *http.Request) (*http.Response, error) {
 				switch r.URL.Host {
 				case "registry.npmjs.org":
-					if mode == "staleness-down" {
+					if mode == "staleness-down" || (mode == "stale-only-skips-incomplete" && strings.HasSuffix(r.URL.Path, "/missing-upstream")) {
 						return response(503, `{}`), nil
 					}
-					if mode == "stale-only" || mode == "stale-only-text" {
+					if mode == "stale-only" || mode == "stale-only-text" || (mode == "stale-only-skips-incomplete" && strings.HasSuffix(r.URL.Path, "/stale-pkg")) {
 						return response(200, `{"dist-tags":{"latest":"2.0.0"},"time":{"2.0.0":"2020-01-01T00:00:00Z"}}`), nil
 					}
 					return response(200, fmt.Sprintf(`{"dist-tags":{"latest":"2.0.0"},"time":{"2.0.0":%q}}`, time.Now().UTC().Format(time.RFC3339))), nil
@@ -334,6 +337,28 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 						if mode == "multiple-versions" {
 							return response(200, `{"results":[{},{}]}`), nil
 						}
+						if mode == "stale-only-skips-incomplete" {
+							var bq struct {
+								Queries []struct {
+									Package struct {
+										Name string `json:"name"`
+									} `json:"package"`
+								} `json:"queries"`
+							}
+							if err := json.NewDecoder(r.Body).Decode(&bq); err != nil {
+								return nil, err
+							}
+							batchRes := make([]map[string]any, len(bq.Queries))
+							for i, q := range bq.Queries {
+								if q.Package.Name == "active-incomplete" {
+									batchRes[i] = map[string]any{"vulns": []map[string]string{{"id": "GHSA-example"}}}
+								} else {
+									batchRes[i] = map[string]any{}
+								}
+							}
+							body, _ := json.Marshal(map[string]any{"results": batchRes})
+							return response(200, string(body)), nil
+						}
 						if vulnerable {
 							return response(200, `{"results":[{"vulns":[{"id":"GHSA-example"}]}]}`), nil
 						}
@@ -348,7 +373,7 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 					}
 					return response(200, fmt.Sprintf(`{"vulns":[{"id":"GHSA-example","aliases":["CVE-2026-12345"],"severity":%s}]}`, severity)), nil
 				case "api.first.org":
-					if mode == "epss-missing" {
+					if mode == "epss-missing" || mode == "stale-only-skips-incomplete" {
 						return response(200, `{"data":[]}`), nil
 					}
 					if mode == "epss-invalid" {
@@ -390,7 +415,7 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			if mode != "text-report" && mode != "stale-only-text" {
 				args = append(args, "--json")
 			}
-			if mode == "stale-only" || mode == "stale-only-text" || mode == "stale-filtered-clean" {
+			if mode == "stale-only" || mode == "stale-only-text" || mode == "stale-filtered-clean" || mode == "stale-only-skips-incomplete" {
 				args = append(args, "--stale-only")
 			}
 			if mode == "json-output-failure" {
@@ -436,11 +461,29 @@ func TestScanExitCodesAndJSON(t *testing.T) {
 			if mode == "stale-filtered-clean" || mode == "empty-project" {
 				expectedResults = 0
 			}
-			if mode == "multiple-versions" {
+			if mode == "multiple-versions" || mode == "stale-only-skips-incomplete" {
 				expectedResults = 2
 			}
 			if len(results) != expectedResults {
 				t.Fatalf("got %+v", results)
+			}
+			if mode == "stale-only" && !results[0].Staleness.IsStale {
+				t.Fatalf("non-stale package included in --stale-only output: %+v", results)
+			}
+			if mode == "stale-only-skips-incomplete" {
+				seen := map[string]bool{}
+				for _, r := range results {
+					if !r.Staleness.IsStale && r.Staleness.CheckError == "" {
+						t.Fatalf("unexpected package in --stale-only output: %+v", r)
+					}
+					if r.Pkg.Name == "active-incomplete" {
+						t.Fatalf("active package with non-staleness error included: %+v", r)
+					}
+					seen[r.Pkg.Name] = true
+				}
+				if !seen["stale-pkg"] || !seen["missing-upstream"] {
+					t.Fatalf("expected stale-pkg and missing-upstream, got %+v", results)
+				}
 			}
 			if mode == "osv-down" || mode == "unresolved" {
 				if results[0].PriorityTier != "UNKNOWN" || results[0].ScanStatus != "incomplete" {
