@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.2
+
+- `--stale-only`: filter output strictly to stale packages (`> 2` years without an upstream release) and packages with incomplete staleness checks, excluding active packages that only have vulnerability or EPSS check errors.
+- Refactor core packages out of `cmd/dep-tracker` into `internal/model`, `internal/cache`, `internal/version`, `internal/updater`, `internal/report`, `internal/intel`, and `internal/parser` with 100% statement coverage.
+
 ## 1.1.1
 
 Found by comparing results with Syft on public projects (see `docs/real-world-validation.md`):
