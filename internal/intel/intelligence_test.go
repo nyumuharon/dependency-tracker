@@ -94,7 +94,7 @@ func TestPyPIFallbackAndConanUnknownDate(t *testing.T) {
 }
 
 func TestNVDMetricsFallbackAndCache(t *testing.T) {
-	for _, metric := range []string{"cvssMetricV31", "cvssMetricV30", "cvssMetricV2"} {
+	for _, metric := range []string{"cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"} {
 		t.Run(metric, func(t *testing.T) {
 			t.Setenv("DEP_TRACKER_CACHE_DIR", t.TempDir())
 			nvdCacheOnce = sync.Once{}

@@ -76,7 +76,7 @@ pytest = "^8.0"
 		if name, version := parsePEP508Spec("name @ "); name != "" || version != "" {
 			t.Errorf("empty direct reference accepted: %q %q", name, version)
 		}
-		for _, spec := range []string{"", " ", ">=1", "a=="} {
+		for _, spec := range []string{"", " ", ">=1", "a==", "303(module, exports, require) {", `module.exports = () => require("node:fs")`, "}"} {
 			name, version := parsePEP508Spec(spec)
 			if name != "" || version != "" {
 				t.Errorf("incomplete spec accepted: %q %q %q", spec, name, version)
@@ -226,10 +226,13 @@ func TestOptionalFileAndContentDispatch(t *testing.T) {
 	if got := unquotedBracketDelta(`["escaped\"quote", 'single']`); got != 0 {
 		t.Fatalf("quoted brackets: %d", got)
 	}
-	for _, name := range []string{"requirements-dev.txt", "requirements.in", "project.fsproj"} {
+	for _, name := range []string{"requirements-dev.txt", "reqs.txt", "requirements.in", "project.fsproj"} {
 		if !isCandidateDependencyFile(name) {
 			t.Error(name)
 		}
+	}
+	if isCandidateDependencyFile("undeclared-require.factory.txt") {
+		t.Error("undeclared-require.factory.txt should not be treated as a candidate dependency file")
 	}
 	var response intel.OSVResponse
 	if err := json.Unmarshal([]byte(`{"vulns":[]}`), &response); err != nil {

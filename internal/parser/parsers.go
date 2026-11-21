@@ -1100,6 +1100,11 @@ func parsePnpmLock(filePath string) ([]Package, error) {
 
 // ── Python pyproject.toml (PEP 621 & Poetry) ──────────────────────────────────
 
+var (
+	pep508NameRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._,\s-]+\])?$`)
+	pep508VerRe  = regexp.MustCompile(`^[A-Za-z0-9*][A-Za-z0-9._*+!~<>=,\s-]*$`)
+)
+
 func parsePEP508Spec(spec string) (string, string) {
 	// Strip environment markers (e.g., ; python_version >= "3.11")
 	spec = strings.Split(spec, ";")[0]
@@ -1110,11 +1115,13 @@ func parsePEP508Spec(spec string) (string, string) {
 
 	// A direct reference (name @ url) has no registry version to check.
 	if at := strings.Index(spec, "@"); at > 0 && !strings.ContainsAny(spec[:at], "=<>!~") {
-		name := strings.TrimSpace(strings.Split(spec[:at], "[")[0])
-		if name == "" || strings.TrimSpace(spec[at+1:]) == "" {
+		rawTarget := strings.TrimSpace(spec[:at])
+		ref := strings.TrimSpace(spec[at+1:])
+		if !pep508NameRe.MatchString(rawTarget) || ref == "" {
 			return "", ""
 		}
-		return name, "@ " + strings.TrimSpace(spec[at+1:])
+		name := strings.TrimSpace(strings.Split(rawTarget, "[")[0])
+		return name, "@ " + ref
 	}
 
 	// Find earliest version comparison operator
@@ -1132,25 +1139,26 @@ func parsePEP508Spec(spec string) (string, string) {
 
 	var rawName, rawVer string
 	if minIdx != -1 {
-		rawName = spec[:minIdx]
-		rawVer = spec[minIdx:]
+		rawName = strings.TrimSpace(spec[:minIdx])
+		rawVer = strings.TrimSpace(spec[minIdx:])
+		verBody := strings.TrimSpace(rawVer[len(matchedOp):])
+		if !pep508NameRe.MatchString(rawName) || !pep508VerRe.MatchString(verBody) {
+			return "", ""
+		}
 		// PEP 508 allows whitespace around the operator: "urllib3 == 1.26.4".
-		if pinned := strings.TrimSpace(rawVer[2:]); matchedOp == "==" && !strings.ContainsAny(pinned, ",* ") {
-			rawVer = pinned
+		if matchedOp == "==" && !strings.ContainsAny(verBody, ",* ") {
+			rawVer = verBody
 		}
 	} else {
 		rawName = spec
+		if !pep508NameRe.MatchString(rawName) {
+			return "", ""
+		}
 		rawVer = "latest"
 	}
 
 	// Strip extras e.g. requests[security] -> requests
-	rawName = strings.Split(rawName, "[")[0]
-	rawName = strings.TrimSpace(rawName)
-	rawVer = strings.TrimSpace(rawVer)
-
-	if rawName == "" || rawVer == "" {
-		return "", ""
-	}
+	rawName = strings.TrimSpace(strings.Split(rawName, "[")[0])
 	return rawName, rawVer
 }
 
@@ -1864,7 +1872,7 @@ func isCandidateDependencyFile(fileName string) bool {
 	}
 
 	if strings.HasSuffix(lower, ".txt") &&
-		(strings.Contains(lower, "req") || strings.Contains(lower, "constraint") || strings.Contains(lower, "conan")) {
+		(strings.Contains(lower, "requirement") || strings.Contains(lower, "reqs") || strings.Contains(lower, "constraint") || strings.Contains(lower, "conan")) {
 		return true
 	}
 
@@ -3081,6 +3089,8 @@ var pythonStdlib = map[string]bool{
 	"warnings": true, "wave": true, "weakref": true, "webbrowser": true, "winreg": true,
 	"winsound": true, "wsgiref": true, "xdrlib": true, "xml": true, "xmlrpc": true,
 	"zipapp": true, "zipfile": true, "zipimport": true, "zlib": true, "zoneinfo": true,
+	// Embedded debugger / reverse-engineering host runtime modules (not PyPI packages)
+	"cutter": true, "gdb": true, "idaapi": true, "idautils": true, "idc": true, "lldb": true, "pwndbg": true,
 }
 
 var pythonImportAliases = map[string]string{
@@ -3118,6 +3128,9 @@ var pythonImportAliases = map[string]string{
 	"jinja2":        "Jinja2",
 	"markupsafe":    "MarkupSafe",
 	"pkg_resources": "setuptools",
+	"elftools":      "pyelftools",
+	"pwn":           "pwntools",
+	"pwnlib":        "pwntools",
 }
 
 var nodeBuiltinModules = map[string]bool{
@@ -3139,7 +3152,7 @@ var (
 	jsImportRe     = regexp.MustCompile(`(?:from\s+['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\))`)
 	rustUseRe      = regexp.MustCompile(`^\s*(?:pub\s+)?(?:use|extern\s+crate)\s+([a-zA-Z0-9_]+)`)
 	cIncludeRe     = regexp.MustCompile(`^\s*#\s*include\s*<([^>]+)>`)
-	javaImportRe   = regexp.MustCompile(`^\s*import\s+(?:static\s+)?([a-zA-Z0-9_.]+)`)
+	javaImportRe   = regexp.MustCompile(`^\s*import\s+(?:static\s+)?([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)`)
 	csUsingRe      = regexp.MustCompile(`^\s*using\s+(?:static\s+)?([a-zA-Z0-9_.]+)\s*;`)
 	phpUseRe       = regexp.MustCompile(`^\s*use\s+([a-zA-Z0-9_]+)\\([a-zA-Z0-9_]+)(?:\\([a-zA-Z0-9_]+))?`)
 	rubyReqRe      = regexp.MustCompile(`^\s*require\s+['"]([^'"]+)['"]`)
@@ -3713,26 +3726,10 @@ func extractJVMImports(filePath string) ([]string, error) {
 			continue
 		}
 		imp := m[1]
-		if strings.HasPrefix(imp, "java.") || strings.HasPrefix(imp, "javax.") ||
-			strings.HasPrefix(imp, "jdk.") || strings.HasPrefix(imp, "sun.") ||
-			strings.HasPrefix(imp, "kotlin.") || strings.HasPrefix(imp, "scala.") ||
-			strings.HasPrefix(imp, "android.") {
-			continue
-		}
-		matched := false
 		for prefix, coord := range jvmPackageToMaven {
-			if strings.HasPrefix(imp, prefix) {
+			if imp == prefix || strings.HasPrefix(imp, prefix+".") {
 				imports = append(imports, coord)
-				matched = true
 				break
-			}
-		}
-		if !matched {
-			parts := strings.Split(imp, ".")
-			if len(parts) >= 4 {
-				group := strings.Join(parts[:3], ".")
-				artifact := parts[3]
-				imports = append(imports, group+":"+artifact)
 			}
 		}
 	}

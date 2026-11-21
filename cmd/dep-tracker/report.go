@@ -11,6 +11,14 @@ func PrintReport(results []ScanResult) {
 	report.PrintReport(results)
 }
 
+func PrintReportWithOptions(results []ScanResult, showAllIncomplete bool) {
+	report.PrintReportWithOptions(results, showAllIncomplete)
+}
+
+func PrintIncompleteFromSBOM(sbomPath string) error {
+	return report.PrintIncompleteFromSBOM(sbomPath)
+}
+
 func GenerateSBOM(results []ScanResult, outputPath string) error {
 	return report.GenerateSBOM(results, outputPath, appVersion)
 }

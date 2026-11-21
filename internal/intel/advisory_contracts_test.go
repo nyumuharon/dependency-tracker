@@ -80,9 +80,29 @@ func TestCVSSPrivilegeMonotonicityAndInvalidNumbers(t *testing.T) {
 			previous = score
 		}
 	}
-	for _, bad := range []string{"NaN", "+Inf", "-1", "12.5", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:X/C:H/I:H/A:H"} {
+	for _, bad := range []string{
+		"NaN", "+Inf", "-1", "12.5",
+		"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:X/C:H/I:H/A:H",
+		"CVSS:4.0/AV:N/AC:L",
+		"CVSS:4.0/AV:X/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+		"CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:S/SA:N",
+		"CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+	} {
 		if score := parseCVSSVector(bad); score != 0 {
 			t.Errorf("invalid score accepted: %s -> %v", bad, score)
+		}
+	}
+	v4Cases := map[string]float64{
+		"CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H":                      10.0,
+		"CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N":                      9.3,
+		"CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:L/VA:N/SC:N/SI:N/SA:N":                      7.1,
+		"CVSS:4.0/AV:A/AC:H/AT:P/PR:L/UI:P/VC:L/VI:H/VA:L/SC:H/SI:L/SA:N/CR:M/IR:M/AR:L":       4.1,
+		"CVSS:4.0/AV:L/AC:H/AT:N/PR:H/UI:A/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N/E:U/MSI:S/MAV:P":      0.6,
+		"CVSS:4.0/AV:P/AC:H/AT:P/PR:H/UI:A/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N/E:U/CR:L/IR:L/AR:L":    0.1,
+	}
+	for vec, want := range v4Cases {
+		if got := parseCVSSVector(vec); got != want {
+			t.Errorf("CVSS v4 %s: got %.1f, want %.1f", vec, got, want)
 		}
 	}
 }

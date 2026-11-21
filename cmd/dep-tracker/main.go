@@ -26,11 +26,12 @@ const appVersion = "1.1.2"
 
 // cliOptions holds the command-line flags accepted by dep-tracker.
 type cliOptions struct {
-	sbomPath  string
-	sarifPath string
-	jsonOut   bool
-	staleOnly bool
-	action    string
+	sbomPath       string
+	sarifPath      string
+	jsonOut        bool
+	staleOnly      bool
+	showIncomplete bool
+	action         string
 }
 
 const helpText = `Dependency Risk Tracker v%[1]s
@@ -45,6 +46,9 @@ COMMANDS
   scan <path>      Scan a project directory (recursively) or a single manifest,
                    lockfile or environment file, print a prioritised risk
                    report, and write an SBOM and a SARIF report.
+  incomplete [sbom]
+                   Display all incomplete checks saved in sbom.json (or a custom
+                   SBOM path) from a previous scan without re-scanning.
   update           Check GitHub Releases and upgrade dep-tracker in-place.
   update --version <version>
                    Install a specific release, older or newer, e.g.
@@ -62,6 +66,9 @@ SCAN OPTIONS
   --stale-only     Only show packages with no upstream release in over two
                    years (730 days), plus incomplete staleness checks.
                    The SBOM/SARIF still cover everything.
+  --show-incomplete
+                   Expand all incomplete checks inline in the terminal report
+                   instead of collapsing lists longer than 5 items.
   -h, --help       Show this help.
   -v, --version    Print the version number.
 
@@ -127,6 +134,12 @@ func parseArgs(args []string) (cliOptions, string, error) {
 		case "version":
 			opts.action = "version"
 			return opts, "", nil
+		case "incomplete":
+			opts.action = "incomplete"
+			if len(args) > 1 {
+				opts.sbomPath = args[1]
+			}
+			return opts, "", nil
 		case "scan":
 			args = args[1:]
 		}
@@ -145,6 +158,8 @@ func parseArgs(args []string) (cliOptions, string, error) {
 			opts.jsonOut = true
 		case a == "--stale-only":
 			opts.staleOnly = true
+		case a == "--show-incomplete":
+			opts.showIncomplete = true
 		case a == "--sbom" || a == "--sarif":
 			if i+1 >= len(args) {
 				return opts, "", fmt.Errorf("%s requires a file path", a)
@@ -213,6 +228,13 @@ func run(args []string) int {
 	}
 	if opts.action == "version" {
 		fmt.Println("dep-tracker " + appVersion)
+		return 0
+	}
+	if opts.action == "incomplete" {
+		if err := PrintIncompleteFromSBOM(opts.sbomPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
 		return 0
 	}
 
@@ -485,7 +507,11 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "Error: JSON encoding failed: %v\n", err)
 		}
 	} else {
-		PrintReport(shown)
+		if opts.showIncomplete {
+			PrintReportWithOptions(shown, true)
+		} else {
+			PrintReport(shown)
+		}
 		if opts.staleOnly {
 			fmt.Fprintf(info, "--stale-only: the summary covers the %d of %d packages shown; the SBOM and SARIF cover all %d.\n", len(shown), len(results), len(results))
 		}

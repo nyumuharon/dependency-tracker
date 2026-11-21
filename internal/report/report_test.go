@@ -300,3 +300,86 @@ func TestScorerEdgeCases(t *testing.T) {
 		t.Fatal("expected UNKNOWN for incomplete scan with no vulns")
 	}
 }
+
+func TestIncompleteReportCollapsingAndSBOMViewer(t *testing.T) {
+	var results []model.ScanResult
+	for i := 1; i <= 7; i++ {
+		results = append(results, model.ScanResult{
+			Pkg:          model.Package{Name: "pkg-" + string(rune('a'+i-1)), Version: "latest", Ecosystem: "PyPI", ManifestPath: "app.py", VersionSource: "import"},
+			ScanStatus:   "incomplete",
+			PriorityTier: "UNKNOWN",
+			CheckErrors:  []string{"unresolved version"},
+		})
+	}
+	collapsed := captureReport(t, results)
+	if !strings.Contains(collapsed, "2 more incomplete check(s) collapsed") || strings.Contains(collapsed, "pkg-g@latest") {
+		t.Fatalf("expected collapsed incomplete output:\n%s", collapsed)
+	}
+
+	file, err := os.CreateTemp(t.TempDir(), "expanded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	func() {
+		defer func() { os.Stdout = old }()
+		os.Stdout = file
+		PrintReportWithOptions(results, true)
+	}()
+	file.Close()
+	expanded, _ := os.ReadFile(file.Name())
+	if !strings.Contains(string(expanded), "pkg-g@latest") || strings.Contains(string(expanded), "collapsed") {
+		t.Fatalf("expected expanded incomplete output:\n%s", expanded)
+	}
+
+	root := t.TempDir()
+	sbomPath := filepath.Join(root, "sbom.json")
+	if err := GenerateSBOM(results, sbomPath, "1.1.2"); err != nil {
+		t.Fatal(err)
+	}
+	viewFile, err := os.CreateTemp(t.TempDir(), "view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() { os.Stdout = old }()
+		os.Stdout = viewFile
+		if err := PrintIncompleteFromSBOM(sbomPath); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	viewFile.Close()
+	viewed, _ := os.ReadFile(viewFile.Name())
+	if !strings.Contains(string(viewed), "pkg-g@latest") || !strings.Contains(string(viewed), "Total incomplete checks: 7") {
+		t.Fatalf("unexpected SBOM incomplete view:\n%s", viewed)
+	}
+
+	cleanSBOM := filepath.Join(root, "clean.json")
+	if err := GenerateSBOM([]model.ScanResult{{Pkg: model.Package{Name: "safe", Version: "1.0.0", Ecosystem: "npm"}, ScanStatus: "complete", PriorityTier: "NONE"}}, cleanSBOM, "1.1.2"); err != nil {
+		t.Fatal(err)
+	}
+	cleanViewFile, err := os.CreateTemp(t.TempDir(), "clean-view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() { os.Stdout = old }()
+		os.Stdout = cleanViewFile
+		if err := PrintIncompleteFromSBOM(cleanSBOM); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	cleanViewFile.Close()
+	cleanViewed, _ := os.ReadFile(cleanViewFile.Name())
+	if !strings.Contains(string(cleanViewed), "No incomplete checks recorded") {
+		t.Fatalf("expected clean SBOM message:\n%s", cleanViewed)
+	}
+
+	if err := PrintIncompleteFromSBOM(filepath.Join(root, "missing.json")); err == nil {
+		t.Fatal("expected error for missing SBOM")
+	}
+	badSBOM := writeFixture(t, root, "bad.json", "{invalid")
+	if err := PrintIncompleteFromSBOM(badSBOM); err == nil {
+		t.Fatal("expected error for malformed SBOM")
+	}
+}

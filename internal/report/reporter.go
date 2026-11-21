@@ -1,13 +1,17 @@
 package report
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/nyumuharon/dependency-tracker/internal/model"
 	"github.com/nyumuharon/dependency-tracker/internal/version"
 )
+
+const maxInlineIncomplete = 5
 
 func TierRank(tier string) int {
 	switch tier {
@@ -27,6 +31,10 @@ func TierRank(tier string) int {
 }
 
 func PrintReport(results []model.ScanResult) {
+	PrintReportWithOptions(results, false)
+}
+
+func PrintReportWithOptions(results []model.ScanResult, showAllIncomplete bool) {
 	sep := strings.Repeat("=", 72)
 	thinSep := strings.Repeat("-", 72)
 
@@ -209,13 +217,22 @@ func PrintReport(results []model.ScanResult) {
 	if len(remediations) > 0 {
 		fmt.Println("  Fixed releases apply to individual advisories; review the details above before upgrading.")
 	}
+	shownIncomplete := 0
 	for _, r := range results {
 		if r.ScanStatus == "incomplete" {
+			if !showAllIncomplete && shownIncomplete >= maxInlineIncomplete {
+				continue
+			}
+			shownIncomplete++
 			fmt.Printf("\n[INCOMPLETE] %s@%s (%s; source: %s)\n", r.Pkg.Name, r.Pkg.Version, r.Pkg.ManifestPath, r.Pkg.VersionSource)
 			for _, msg := range r.CheckErrors {
 				fmt.Printf("  - %s\n", msg)
 			}
 		}
+	}
+	if !showAllIncomplete && incompleteCount > maxInlineIncomplete {
+		fmt.Printf("\n... and %d more incomplete check(s) collapsed for readability.\n", incompleteCount-maxInlineIncomplete)
+		fmt.Println("    Run 'dep-tracker incomplete' to view all incomplete checks from sbom.json, or scan with '--show-incomplete'.")
 	}
 
 	// ── SECTION 3: STALE / ABANDONED PACKAGES ─────────────────────────────────
@@ -274,4 +291,60 @@ func PrintReport(results []model.ScanResult) {
 	fmt.Printf("  NONE                 : %d\n", noneCount)
 	fmt.Printf("  UNKNOWN              : %d\n", unknownCount)
 	fmt.Println(sep)
+}
+
+func PrintIncompleteFromSBOM(sbomPath string) error {
+	data, err := os.ReadFile(sbomPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", sbomPath, err)
+	}
+	var sbom CycloneDXSBOM
+	if err := json.Unmarshal(data, &sbom); err != nil {
+		return fmt.Errorf("invalid SBOM %s: %w", sbomPath, err)
+	}
+
+	sep := strings.Repeat("=", 72)
+	fmt.Println(sep)
+	fmt.Printf("%48s\n", "DEPENDENCY RISK TRACKER — INCOMPLETE CHECKS")
+	fmt.Println(sep)
+
+	count := 0
+	for _, comp := range sbom.Components {
+		var status, manifest, source string
+		var errs []string
+		for _, prop := range comp.Properties {
+			switch prop.Name {
+			case "risk:scanStatus":
+				status = prop.Value
+			case "risk:manifestPath":
+				manifest = prop.Value
+			case "risk:versionSource":
+				source = prop.Value
+			case "risk:checkError":
+				errs = append(errs, prop.Value)
+			}
+		}
+		if status != "incomplete" {
+			continue
+		}
+		count++
+		ver := comp.Version
+		if ver == "" {
+			if _, after, ok := strings.Cut(strings.SplitN(comp.BOMRef, "#", 2)[0], "@"); ok {
+				ver = after
+			}
+		}
+		fmt.Printf("\n[INCOMPLETE] %s@%s (%s; source: %s)\n", comp.Name, ver, manifest, source)
+		for _, msg := range errs {
+			fmt.Printf("  - %s\n", msg)
+		}
+	}
+
+	if count == 0 {
+		fmt.Printf("\n✅ No incomplete checks recorded in %s.\n", sbomPath)
+	} else {
+		fmt.Printf("\nTotal incomplete checks: %d (from %s)\n", count, sbomPath)
+	}
+	fmt.Println(sep)
+	return nil
 }
