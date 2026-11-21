@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.3
+
+- Parser & Discovery: require PEP 508-compliant names and version specifiers when parsing Python requirements, narrow `.txt` candidate discovery to `requirement`/`reqs`/`constraint`/`conan` filenames, stop inventing Maven coordinates from unmapped Java imports or wildcard imports, map `elftools` -> `pyelftools` and `pwn`/`pwnlib` -> `pwntools`, and ignore embedded debugger/RE host Python modules (`gdb`, `lldb`, `pwndbg`, `cutter`, `idaapi`, `idautils`, `idc`).
+- CVSS v4.0: calculate CVSS v4.0 vector scores locally using the official FIRST MacroVector lookup and severity-distance interpolation specification.
+- Terminal report: collapse `[INCOMPLETE]` lists longer than 5 items by default, add `--show-incomplete` to expand them inline, and add `dep-tracker incomplete [sbom]` to view all saved incomplete checks from `sbom.json`.
+
 ## 1.1.2
 
 - `--stale-only`: filter output strictly to stale packages (`> 2` years without an upstream release) and packages with incomplete staleness checks, excluding active packages that only have vulnerability or EPSS check errors.
