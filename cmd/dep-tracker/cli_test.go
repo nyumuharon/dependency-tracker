@@ -65,23 +65,25 @@ func TestCLICommandsAndProcessExit(t *testing.T) {
 }
 
 func TestCLIEqualsOptions(t *testing.T) {
-	opts, path, err := parseArgs([]string{"scan", ".", "--sbom", "bom.json", "--sarif=results.sarif", "--show-incomplete"})
-	if err != nil || path != "." || opts.sbomPath != "bom.json" || opts.sarifPath != "results.sarif" || !opts.showIncomplete {
+	opts, path, err := parseArgs([]string{"scan", ".", "--sbom", "bom.json", "--sarif=results.sarif", "--show-incomplete", "--show-vulnerabilities"})
+	if err != nil || path != "." || opts.sbomPath != "bom.json" || opts.sarifPath != "results.sarif" || !opts.showIncomplete || !opts.showVulns {
 		t.Fatalf("%+v %s %v", opts, path, err)
 	}
 	sbom := filepath.Join(t.TempDir(), "sbom.json")
 	if err := GenerateSBOM([]ScanResult{{Pkg: Package{Name: "x", Version: "latest", Ecosystem: "PyPI"}, ScanStatus: "incomplete", PriorityTier: "UNKNOWN", CheckErrors: []string{"unresolved"}}}, sbom); err != nil {
 		t.Fatal(err)
 	}
-	if code := run([]string{"incomplete", sbom}); code != 0 {
-		t.Fatalf("incomplete command failed: %d", code)
-	}
-	if code := run([]string{"incomplete", filepath.Join(t.TempDir(), "missing.json")}); code != 1 {
-		t.Fatalf("expected error for missing SBOM: %d", code)
+	for _, cmd := range []string{"incomplete", "vulnerabilities"} {
+		if code := run([]string{cmd, sbom}); code != 0 {
+			t.Fatalf("%s command failed: %d", cmd, code)
+		}
+		if code := run([]string{cmd, filepath.Join(t.TempDir(), "missing.json")}); code != 1 {
+			t.Fatalf("expected error for missing SBOM in %s: %d", cmd, code)
+		}
 	}
 	manifest := writeFixture(t, t.TempDir(), "package.json", `{}`)
-	if code := run([]string{"scan", manifest, "--show-incomplete", "--sbom", sbom, "--sarif", filepath.Join(t.TempDir(), "out.sarif")}); code != 0 {
-		t.Fatalf("scan --show-incomplete failed: %d", code)
+	if code := run([]string{"scan", manifest, "--show-incomplete", "--show-vulnerabilities", "--sbom", sbom, "--sarif", filepath.Join(t.TempDir(), "out.sarif")}); code != 0 {
+		t.Fatalf("scan --show-incomplete --show-vulnerabilities failed: %d", code)
 	}
 }
 

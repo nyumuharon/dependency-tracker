@@ -30,6 +30,7 @@ type cliOptions struct {
 	sarifPath      string
 	jsonOut        bool
 	staleOnly      bool
+	showVulns      bool
 	showIncomplete bool
 	action         string
 }
@@ -46,6 +47,9 @@ COMMANDS
   scan <path>      Scan a project directory (recursively) or a single manifest,
                    lockfile or environment file, print a prioritised risk
                    report, and write an SBOM and a SARIF report.
+  vulnerabilities [sbom]
+                   Display all vulnerable packages saved in sbom.json (or a
+                   custom SBOM path) from a previous scan without re-scanning.
   incomplete [sbom]
                    Display all incomplete checks saved in sbom.json (or a custom
                    SBOM path) from a previous scan without re-scanning.
@@ -66,6 +70,9 @@ SCAN OPTIONS
   --stale-only     Only show packages with no upstream release in over two
                    years (730 days), plus incomplete staleness checks.
                    The SBOM/SARIF still cover everything.
+  --show-vulnerabilities
+                   Expand all vulnerable packages inline in the terminal report
+                   instead of collapsing lists longer than 7 items.
   --show-incomplete
                    Expand all incomplete checks inline in the terminal report
                    instead of collapsing lists longer than 5 items.
@@ -134,8 +141,8 @@ func parseArgs(args []string) (cliOptions, string, error) {
 		case "version":
 			opts.action = "version"
 			return opts, "", nil
-		case "incomplete":
-			opts.action = "incomplete"
+		case "incomplete", "vulnerabilities":
+			opts.action = args[0]
 			if len(args) > 1 {
 				opts.sbomPath = args[1]
 			}
@@ -158,6 +165,8 @@ func parseArgs(args []string) (cliOptions, string, error) {
 			opts.jsonOut = true
 		case a == "--stale-only":
 			opts.staleOnly = true
+		case a == "--show-vulnerabilities":
+			opts.showVulns = true
 		case a == "--show-incomplete":
 			opts.showIncomplete = true
 		case a == "--sbom" || a == "--sarif":
@@ -232,6 +241,13 @@ func run(args []string) int {
 	}
 	if opts.action == "incomplete" {
 		if err := PrintIncompleteFromSBOM(opts.sbomPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if opts.action == "vulnerabilities" {
+		if err := PrintVulnerabilitiesFromSBOM(opts.sbomPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
@@ -507,8 +523,8 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "Error: JSON encoding failed: %v\n", err)
 		}
 	} else {
-		if opts.showIncomplete {
-			PrintReportWithOptions(shown, true)
+		if opts.showVulns || opts.showIncomplete {
+			PrintReportWithOptions(shown, opts.showVulns, opts.showIncomplete)
 		} else {
 			PrintReport(shown)
 		}

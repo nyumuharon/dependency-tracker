@@ -4,7 +4,7 @@
 
 - Parser & Discovery: require PEP 508-compliant names and version specifiers when parsing Python requirements, narrow `.txt` candidate discovery to `requirement`/`reqs`/`constraint`/`conan` filenames, stop inventing Maven coordinates from unmapped Java imports or wildcard imports, map `elftools` -> `pyelftools` and `pwn`/`pwnlib` -> `pwntools`, and ignore embedded debugger/RE host Python modules (`gdb`, `lldb`, `pwndbg`, `cutter`, `idaapi`, `idautils`, `idc`).
 - CVSS v4.0: calculate CVSS v4.0 vector scores locally using the official FIRST MacroVector lookup and severity-distance interpolation specification.
-- Terminal report: collapse `[INCOMPLETE]` lists longer than 5 items by default, add `--show-incomplete` to expand them inline, and add `dep-tracker incomplete [sbom]` to view all saved incomplete checks from `sbom.json`.
+- Terminal report: collapse vulnerable package lists longer than 7 items and `[INCOMPLETE]` lists longer than 5 items by default, add `--show-vulnerabilities` and `--show-incomplete` to expand them inline, and add `dep-tracker vulnerabilities [sbom]` and `dep-tracker incomplete [sbom]` to view all saved findings from `sbom.json`.
 
 ## 1.1.2
 

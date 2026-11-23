@@ -303,17 +303,26 @@ func TestScorerEdgeCases(t *testing.T) {
 
 func TestIncompleteReportCollapsingAndSBOMViewer(t *testing.T) {
 	var results []model.ScanResult
-	for i := 1; i <= 7; i++ {
+	for i := 1; i <= 9; i++ {
 		results = append(results, model.ScanResult{
 			Pkg:          model.Package{Name: "pkg-" + string(rune('a'+i-1)), Version: "latest", Ecosystem: "PyPI", ManifestPath: "app.py", VersionSource: "import"},
 			ScanStatus:   "incomplete",
 			PriorityTier: "UNKNOWN",
 			CheckErrors:  []string{"unresolved version"},
 		})
+		results = append(results, model.ScanResult{
+			Pkg:             model.Package{Name: "vuln-" + string(rune('a'+i-1)), Version: "1.0.0", Ecosystem: "npm", ManifestPath: "package-lock.json", VersionSource: "lockfile"},
+			ScanStatus:      "complete",
+			PriorityTier:    "HIGH",
+			Vulnerabilities: []model.Vulnerability{{CVEID: "CVE-2026-100" + string(rune('0'+i)), CVSS: 7.5, Summary: "issue", FixedVersion: "1.0.1", IsKEV: i == 1}},
+		})
 	}
 	collapsed := captureReport(t, results)
-	if !strings.Contains(collapsed, "2 more incomplete check(s) collapsed") || strings.Contains(collapsed, "pkg-g@latest") {
+	if !strings.Contains(collapsed, "4 more incomplete check(s) collapsed") || strings.Contains(collapsed, "pkg-i@latest") {
 		t.Fatalf("expected collapsed incomplete output:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "2 more vulnerable package(s) collapsed") || strings.Contains(collapsed, "[HIGH] vuln-i") {
+		t.Fatalf("expected collapsed vulnerability output:\n%s", collapsed)
 	}
 
 	file, err := os.CreateTemp(t.TempDir(), "expanded")
@@ -324,17 +333,17 @@ func TestIncompleteReportCollapsingAndSBOMViewer(t *testing.T) {
 	func() {
 		defer func() { os.Stdout = old }()
 		os.Stdout = file
-		PrintReportWithOptions(results, true)
+		PrintReportWithOptions(results, true, true)
 	}()
 	file.Close()
 	expanded, _ := os.ReadFile(file.Name())
-	if !strings.Contains(string(expanded), "pkg-g@latest") || strings.Contains(string(expanded), "collapsed") {
-		t.Fatalf("expected expanded incomplete output:\n%s", expanded)
+	if !strings.Contains(string(expanded), "pkg-i@latest") || !strings.Contains(string(expanded), "[HIGH] vuln-i") || strings.Contains(string(expanded), "collapsed") {
+		t.Fatalf("expected expanded output:\n%s", expanded)
 	}
 
 	root := t.TempDir()
 	sbomPath := filepath.Join(root, "sbom.json")
-	if err := GenerateSBOM(results, sbomPath, "1.1.2"); err != nil {
+	if err := GenerateSBOM(results, sbomPath, "1.1.3"); err != nil {
 		t.Fatal(err)
 	}
 	viewFile, err := os.CreateTemp(t.TempDir(), "view")
@@ -347,15 +356,19 @@ func TestIncompleteReportCollapsingAndSBOMViewer(t *testing.T) {
 		if err := PrintIncompleteFromSBOM(sbomPath); err != nil {
 			t.Fatal(err)
 		}
+		if err := PrintVulnerabilitiesFromSBOM(sbomPath); err != nil {
+			t.Fatal(err)
+		}
 	}()
 	viewFile.Close()
 	viewed, _ := os.ReadFile(viewFile.Name())
-	if !strings.Contains(string(viewed), "pkg-g@latest") || !strings.Contains(string(viewed), "Total incomplete checks: 7") {
-		t.Fatalf("unexpected SBOM incomplete view:\n%s", viewed)
+	if !strings.Contains(string(viewed), "pkg-i@latest") || !strings.Contains(string(viewed), "Total incomplete checks: 9") ||
+		!strings.Contains(string(viewed), "vuln-i@1.0.0") || !strings.Contains(string(viewed), "Total vulnerable packages: 9") {
+		t.Fatalf("unexpected SBOM view:\n%s", viewed)
 	}
 
 	cleanSBOM := filepath.Join(root, "clean.json")
-	if err := GenerateSBOM([]model.ScanResult{{Pkg: model.Package{Name: "safe", Version: "1.0.0", Ecosystem: "npm"}, ScanStatus: "complete", PriorityTier: "NONE"}}, cleanSBOM, "1.1.2"); err != nil {
+	if err := GenerateSBOM([]model.ScanResult{{Pkg: model.Package{Name: "safe", Version: "1.0.0", Ecosystem: "npm"}, ScanStatus: "complete", PriorityTier: "NONE"}}, cleanSBOM, "1.1.3"); err != nil {
 		t.Fatal(err)
 	}
 	cleanViewFile, err := os.CreateTemp(t.TempDir(), "clean-view")
@@ -368,18 +381,27 @@ func TestIncompleteReportCollapsingAndSBOMViewer(t *testing.T) {
 		if err := PrintIncompleteFromSBOM(cleanSBOM); err != nil {
 			t.Fatal(err)
 		}
+		if err := PrintVulnerabilitiesFromSBOM(cleanSBOM); err != nil {
+			t.Fatal(err)
+		}
 	}()
 	cleanViewFile.Close()
 	cleanViewed, _ := os.ReadFile(cleanViewFile.Name())
-	if !strings.Contains(string(cleanViewed), "No incomplete checks recorded") {
+	if !strings.Contains(string(cleanViewed), "No incomplete checks recorded") || !strings.Contains(string(cleanViewed), "No vulnerabilities recorded") {
 		t.Fatalf("expected clean SBOM message:\n%s", cleanViewed)
 	}
 
 	if err := PrintIncompleteFromSBOM(filepath.Join(root, "missing.json")); err == nil {
 		t.Fatal("expected error for missing SBOM")
 	}
+	if err := PrintVulnerabilitiesFromSBOM(filepath.Join(root, "missing.json")); err == nil {
+		t.Fatal("expected error for missing SBOM")
+	}
 	badSBOM := writeFixture(t, root, "bad.json", "{invalid")
 	if err := PrintIncompleteFromSBOM(badSBOM); err == nil {
+		t.Fatal("expected error for malformed SBOM")
+	}
+	if err := PrintVulnerabilitiesFromSBOM(badSBOM); err == nil {
 		t.Fatal("expected error for malformed SBOM")
 	}
 }

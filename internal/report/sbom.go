@@ -123,6 +123,12 @@ func GenerateSBOM(results []model.ScanResult, outputPath string, appVersion stri
 				Name:  "vuln:cveID",
 				Value: fmt.Sprintf("%s (CVSS:%s EPSS:%s)", v.CVEID, v.CVSSDisplay(), v.EPSSDisplay()),
 			})
+			if v.Summary != "" {
+				comp.Properties = append(comp.Properties, SBOMProperty{
+					Name:  "vuln:summary",
+					Value: v.Summary,
+				})
+			}
 			if v.FixedVersion != "" {
 				comp.Properties = append(comp.Properties, SBOMProperty{
 					Name:  "vuln:fixedVersion",

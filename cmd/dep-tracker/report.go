@@ -11,12 +11,16 @@ func PrintReport(results []ScanResult) {
 	report.PrintReport(results)
 }
 
-func PrintReportWithOptions(results []ScanResult, showAllIncomplete bool) {
-	report.PrintReportWithOptions(results, showAllIncomplete)
+func PrintReportWithOptions(results []ScanResult, showAllVulns, showAllIncomplete bool) {
+	report.PrintReportWithOptions(results, showAllVulns, showAllIncomplete)
 }
 
 func PrintIncompleteFromSBOM(sbomPath string) error {
 	return report.PrintIncompleteFromSBOM(sbomPath)
+}
+
+func PrintVulnerabilitiesFromSBOM(sbomPath string) error {
+	return report.PrintVulnerabilitiesFromSBOM(sbomPath)
 }
 
 func GenerateSBOM(results []ScanResult, outputPath string) error {

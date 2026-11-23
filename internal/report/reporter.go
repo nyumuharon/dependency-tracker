@@ -11,7 +11,10 @@ import (
 	"github.com/nyumuharon/dependency-tracker/internal/version"
 )
 
-const maxInlineIncomplete = 5
+const (
+	maxInlineVulnerabilities = 7
+	maxInlineIncomplete      = 5
+)
 
 func TierRank(tier string) int {
 	switch tier {
@@ -31,10 +34,10 @@ func TierRank(tier string) int {
 }
 
 func PrintReport(results []model.ScanResult) {
-	PrintReportWithOptions(results, false)
+	PrintReportWithOptions(results, false, false)
 }
 
-func PrintReportWithOptions(results []model.ScanResult, showAllIncomplete bool) {
+func PrintReportWithOptions(results []model.ScanResult, showAllVulns, showAllIncomplete bool) {
 	sep := strings.Repeat("=", 72)
 	thinSep := strings.Repeat("-", 72)
 
@@ -144,7 +147,12 @@ func PrintReportWithOptions(results []model.ScanResult, showAllIncomplete bool) 
 	// ── SECTION 1: VULNERABILITIES (HIGH-SIGNAL) ──────────────────────────────
 	if len(vulnResults) > 0 {
 		fmt.Printf("\n🚨 IDENTIFIED VULNERABILITIES (%d package(s) affected):\n", len(vulnResults))
+		shownVulns := 0
 		for _, r := range vulnResults {
+			if !showAllVulns && shownVulns >= maxInlineVulnerabilities {
+				continue
+			}
+			shownVulns++
 			badge := "[!]"
 			if r.PriorityTier == "CRITICAL-EXPLOITABLE" {
 				badge = "[CRITICAL-EXPLOITABLE]"
@@ -187,6 +195,10 @@ func PrintReportWithOptions(results []model.ScanResult, showAllIncomplete bool) 
 					fmt.Printf("        Fix     : Fixed release: %s; verify branch compatibility\n", v.FixedVersion)
 				}
 			}
+		}
+		if !showAllVulns && len(vulnResults) > maxInlineVulnerabilities {
+			fmt.Printf("\n... and %d more vulnerable package(s) collapsed for readability.\n", len(vulnResults)-maxInlineVulnerabilities)
+			fmt.Println("    Run 'dep-tracker vulnerabilities' to view all vulnerable packages from sbom.json, or scan with '--show-vulnerabilities'.")
 		}
 	} else {
 		if incompleteCount > 0 {
@@ -344,6 +356,64 @@ func PrintIncompleteFromSBOM(sbomPath string) error {
 		fmt.Printf("\n✅ No incomplete checks recorded in %s.\n", sbomPath)
 	} else {
 		fmt.Printf("\nTotal incomplete checks: %d (from %s)\n", count, sbomPath)
+	}
+	fmt.Println(sep)
+	return nil
+}
+
+func PrintVulnerabilitiesFromSBOM(sbomPath string) error {
+	data, err := os.ReadFile(sbomPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", sbomPath, err)
+	}
+	var sbom CycloneDXSBOM
+	if err := json.Unmarshal(data, &sbom); err != nil {
+		return fmt.Errorf("invalid SBOM %s: %w", sbomPath, err)
+	}
+
+	sep := strings.Repeat("=", 72)
+	fmt.Println(sep)
+	fmt.Printf("%48s\n", "DEPENDENCY RISK TRACKER — VULNERABILITIES")
+	fmt.Println(sep)
+
+	count := 0
+	for _, comp := range sbom.Components {
+		var tier, manifest, source string
+		var details []string
+		hasVuln := false
+		for _, prop := range comp.Properties {
+			switch prop.Name {
+			case "risk:priorityTier":
+				tier = prop.Value
+			case "risk:manifestPath":
+				manifest = prop.Value
+			case "risk:versionSource":
+				source = prop.Value
+			case "vuln:cveID":
+				hasVuln = true
+				details = append(details, "  • "+prop.Value)
+			case "vuln:summary":
+				details = append(details, "    Summary : "+prop.Value)
+			case "vuln:fixedVersion":
+				details = append(details, "    Fix     : Fixed release: "+prop.Value)
+			case "vuln:cisaKEV":
+				details = append(details, "    CISA-KEV: ⚠️ Actively exploited")
+			}
+		}
+		if !hasVuln {
+			continue
+		}
+		count++
+		fmt.Printf("\n[%s] %s@%s (%s; source: %s)\n", tier, comp.Name, comp.Version, manifest, source)
+		for _, line := range details {
+			fmt.Println(line)
+		}
+	}
+
+	if count == 0 {
+		fmt.Printf("\n✅ No vulnerabilities recorded in %s.\n", sbomPath)
+	} else {
+		fmt.Printf("\nTotal vulnerable packages: %d (from %s)\n", count, sbomPath)
 	}
 	fmt.Println(sep)
 	return nil
